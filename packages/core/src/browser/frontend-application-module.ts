@@ -35,7 +35,8 @@ import {
     MenuCommandAdapterRegistry,
     MenuCommandExecutor,
     MenuCommandAdapterRegistryImpl,
-    MenuCommandExecutorImpl
+    MenuCommandExecutorImpl,
+    MenuPath
 } from '../common';
 import { KeybindingRegistry, KeybindingContext, KeybindingContribution } from './keybinding';
 import { FrontendApplication } from './frontend-application';
@@ -126,7 +127,7 @@ import { DockPanel, RendererHost } from './widgets';
 import { TooltipService, TooltipServiceImpl } from './tooltip-service';
 import { BackendRequestService, RequestService, REQUEST_SERVICE_PATH } from '@theia/request';
 import { bindFrontendStopwatch, bindBackendStopwatch } from './performance';
-import { SaveResourceService } from './save-resource-service';
+import { SaveableService } from './saveable-service';
 import { SecondaryWindowHandler } from './secondary-window-handler';
 import { UserWorkingDirectoryProvider } from './user-working-directory-provider';
 import { WindowTitleService } from './window/window-title-service';
@@ -137,9 +138,13 @@ import { MarkdownRenderer, MarkdownRendererFactory, MarkdownRendererImpl } from 
 import { StylingParticipant, StylingService } from './styling-service';
 import { bindCommonStylingParticipants } from './common-styling-participants';
 import { HoverService } from './hover-service';
-import { AdditionalViewsMenuWidget, AdditionalViewsMenuWidgetFactory } from './shell/additional-views-menu-widget';
+import { AdditionalViewsMenuPath, AdditionalViewsMenuWidget, AdditionalViewsMenuWidgetFactory } from './shell/additional-views-menu-widget';
 import { LanguageIconLabelProvider } from './language-icon-provider';
 import { bindTreePreferences } from './tree';
+import { OpenWithService } from './open-with-service';
+import { ViewColumnService } from './shell/view-column-service';
+import { DomInputUndoRedoHandler, UndoRedoHandler, UndoRedoHandlerService } from './undo-redo-handler';
+import { WidgetStatusBarContribution, WidgetStatusBarService } from './widget-status-bar-service';
 
 export { bindResourceProvider, bindMessageService, bindPreferenceService };
 
@@ -175,9 +180,9 @@ export const frontendApplicationModule = new ContainerModule((bind, _unbind, _is
     bind(SidebarBottomMenuWidgetFactory).toAutoFactory(SidebarBottomMenuWidget);
     bind(AdditionalViewsMenuWidget).toSelf();
     bind(AdditionalViewsMenuWidgetFactory).toFactory(ctx => (side: 'left' | 'right') => {
-        const widget = ctx.container.resolve(AdditionalViewsMenuWidget);
-        widget.side = side;
-        return widget;
+        const childContainer = ctx.container.createChild();
+        childContainer.bind<MenuPath>(AdditionalViewsMenuPath).toConstantValue(['additional_views_menu', side]);
+        return childContainer.resolve(AdditionalViewsMenuWidget);
     });
     bind(SplitPositionHandler).toSelf().inSingletonScope();
 
@@ -223,6 +228,8 @@ export const frontendApplicationModule = new ContainerModule((bind, _unbind, _is
 
     bind(CommandOpenHandler).toSelf().inSingletonScope();
     bind(OpenHandler).toService(CommandOpenHandler);
+
+    bind(OpenWithService).toSelf().inSingletonScope();
 
     bind(TooltipServiceImpl).toSelf().inSingletonScope();
     bind(TooltipService).toService(TooltipServiceImpl);
@@ -446,7 +453,9 @@ export const frontendApplicationModule = new ContainerModule((bind, _unbind, _is
     bindFrontendStopwatch(bind);
     bindBackendStopwatch(bind);
 
-    bind(SaveResourceService).toSelf().inSingletonScope();
+    bind(SaveableService).toSelf().inSingletonScope();
+    bind(FrontendApplicationContribution).toService(SaveableService);
+
     bind(UserWorkingDirectoryProvider).toSelf().inSingletonScope();
     bind(FrontendApplicationContribution).toService(UserWorkingDirectoryProvider);
 
@@ -457,4 +466,14 @@ export const frontendApplicationModule = new ContainerModule((bind, _unbind, _is
     bind(FrontendApplicationContribution).toService(StylingService);
 
     bind(SecondaryWindowHandler).toSelf().inSingletonScope();
+    bind(ViewColumnService).toSelf().inSingletonScope();
+
+    bind(UndoRedoHandlerService).toSelf().inSingletonScope();
+    bindContributionProvider(bind, UndoRedoHandler);
+    bind(DomInputUndoRedoHandler).toSelf().inSingletonScope();
+    bind(UndoRedoHandler).toService(DomInputUndoRedoHandler);
+
+    bind(WidgetStatusBarService).toSelf().inSingletonScope();
+    bind(FrontendApplicationContribution).toService(WidgetStatusBarService);
+    bindContributionProvider(bind, WidgetStatusBarContribution);
 });

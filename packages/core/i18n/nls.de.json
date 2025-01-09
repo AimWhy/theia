@@ -1,11 +1,47 @@
 {
+  "aiConfiguration:open": "AI-Konfigurationsansicht öffnen",
+  "aiHistory:clear": "AI-Verlauf: Geschichte löschen",
+  "aiHistory:open": "AI-Historienansicht öffnen",
+  "aiHistory:sortChronologically": "AI-Geschichte: Chronologisch sortieren",
+  "aiHistory:sortReverseChronologically": "AI-Geschichte: Rückwärts chronologisch sortieren",
   "debug.breakpoint.editCondition": "Edit Bedingung...",
+  "notebook.cell.changeToCode": "Zelle in Code ändern",
+  "notebook.cell.changeToMarkdown": "Zelle in Mardown ändern",
+  "notebook.cell.insertMarkdownCellAbove": "Markdown-Zelle oben einfügen",
+  "notebook.cell.insertMarkdownCellBelow": "Markdown-Zelle unten einfügen",
   "terminal:new:profile": "Neues integriertes Terminal aus einem Profil erstellen",
   "terminal:profile:default": "Wählen Sie das Standard-Terminalprofil",
   "theia": {
     "callhierarchy": {
       "noCallers": "Es wurden keine Anrufer entdeckt.",
       "open": "Öffne Aufruf-Hierarchie"
+    },
+    "collaboration": {
+      "collaborate": "Zusammenarbeiten",
+      "collaboration": "Zusammenarbeit",
+      "collaborationWorkspace": "Arbeitsbereich für Zusammenarbeit",
+      "connected": "Verbunden",
+      "connectedSession": "Verbunden mit einer Sitzung zur Zusammenarbeit",
+      "copiedInvitation": "Einladungscode in die Zwischenablage kopiert.",
+      "copyAgain": "Erneut kopieren",
+      "createRoom": "Neue Collaboration-Sitzung erstellen",
+      "creatingRoom": "Sitzung erstellen",
+      "end": "Kollaborationssitzung beenden",
+      "endDetail": "Beenden Sie die Sitzung, beenden Sie die Freigabe von Inhalten und sperren Sie den Zugang für andere.",
+      "enterCode": "Enter collaboration session code",
+      "failedCreate": "Es konnte kein Raum erstellt werden: {0}",
+      "failedJoin": "Verbindung zum Raum fehlgeschlagen: {0}",
+      "invite": "Andere einladen",
+      "inviteDetail": "Kopieren Sie den Einladungscode, um ihn mit anderen zu teilen und an der Sitzung teilzunehmen.",
+      "joinRoom": "An der Collaboration-Sitzung teilnehmen",
+      "joiningRoom": "Beitrittssitzung",
+      "leave": "Kollaborationssitzung verlassen",
+      "leaveDetail": "Trennen Sie die Verbindung zur aktuellen Zusammenarbeitssitzung und schließen Sie den Arbeitsbereich.",
+      "selectCollaboration": "Wählen Sie die Option Zusammenarbeit",
+      "sharedSession": "Gemeinsame Sitzung zur Zusammenarbeit",
+      "startSession": "Zusammenarbeitssitzung starten oder beitreten",
+      "userWantsToJoin": "Benutzer '{0}' möchte dem Collaboration Room beitreten",
+      "whatToDo": "Was würden Sie gerne mit anderen Mitarbeitern machen?"
     },
     "core": {
       "about": {
@@ -109,23 +145,22 @@
       "editor.bracketPairColorization.enabled": "Steuert, ob die Einfärbung von Klammerpaaren aktiviert ist oder nicht. Verwenden Sie `#workbench.colorCustomizations#`, um die Farben der Klammerhervorhebung zu überschreiben.",
       "editor.codeActionWidget.includeNearbyQuickfixes": "Aktivieren/Deaktivieren der Anzeige des nächstgelegenen Quickfix innerhalb einer Zeile, wenn keine Diagnose durchgeführt wird.",
       "editor.detectIndentation": "Steuert, ob `#editor.tabSize#` und `#editor.insertSpaces#` automatisch erkannt werden, wenn eine Datei geöffnet wird, basierend auf dem Inhalt der Datei.",
-      "editor.formatOnSaveMode.modificationsIfAvailable": "Es wird versucht, nur Änderungen zu formatieren (erfordert Quellensicherung). Wenn die Versionskontrolle nicht verwendet werden kann, wird die gesamte Datei formatiert.",
+      "editor.dropIntoEditor.enabled": "Steuert, ob Sie eine Datei durch Ziehen und Ablegen in einen Texteditor ziehen können, indem Sie die \"Umschalttaste\" gedrückt halten (anstatt die Datei in einem Editor zu öffnen).",
       "editor.hover.hidingDelay": "Steuert die Verzögerung in Millisekunden, nach der der Hover ausgeblendet wird. Erfordert, dass `editor.hover.sticky` aktiviert ist.",
       "editor.inlayHints.enabled1": "Inlay-Hinweise werden standardmäßig angezeigt und bei gedrückter Tastenkombination \"Strg+Alt\" ausgeblendet",
       "editor.inlayHints.enabled2": "Inlay-Hinweise sind standardmäßig ausgeblendet und werden angezeigt, wenn die Tastenkombination \"Strg+Alt\" gedrückt wird.",
       "editor.inlayHints.fontFamily": "Steuert die Schriftfamilie der Inlay-Hinweise im Editor. Wenn leer, wird die `#editor.fontFamily#` verwendet.",
       "editor.inlayHints.fontSize": "Steuert die Schriftgröße der Inlay-Hinweise im Editor. Als Vorgabe wird die `#editor.fontSize#` verwendet, wenn der konfigurierte Wert kleiner als `5` oder größer als die Editor-Schriftgröße ist.",
       "editor.insertSpaces": "Leerzeichen einfügen, wenn `Tab` gedrückt wird. Diese Einstellung wird auf der Grundlage des Dateiinhalts außer Kraft gesetzt, wenn `#editor.detectIndentation#` eingeschaltet ist.",
+      "editor.occurrencesHighlight": "Steuert, ob der Editor das Auftreten von semantischen Symbolen hervorheben soll.",
       "editor.quickSuggestions": "Legt fest, ob während der Eingabe automatisch Vorschläge angezeigt werden sollen. Dies kann für die Eingabe von Kommentaren, Strings und anderem Code gesteuert werden. Schnellvorschläge können so konfiguriert werden, dass sie als Ghosttext oder mit dem Suggest-Widget angezeigt werden. Beachten Sie auch die '#editor.suggestOnTriggerCharacters#'-Einstellung, die steuert, ob Vorschläge durch Sonderzeichen ausgelöst werden.",
       "editor.stickyScroll.scrollWithEditor": "Aktivieren Sie den Bildlauf des Sticky-Scroll-Widgets mit der horizontalen Bildlaufleiste des Editors.",
       "editor.suggestFontSize": "Schriftgröße für das Vorschlags-Widget. Wenn auf `0` gesetzt, wird der Wert von `#editor.fontSize#` verwendet.",
       "editor.suggestLineHeight": "Zeilenhöhe für das Vorschlags-Widget. Wenn auf `0` gesetzt, wird der Wert von `#editor.lineHeight#` verwendet. Der Mindestwert ist 8.",
       "editor.tabSize": "Die Anzahl der Leerzeichen, die ein Tabulator ausmacht. Diese Einstellung wird basierend auf dem Inhalt der Datei überschrieben, wenn `#editor.detectIndentation#` eingeschaltet ist.",
-      "files.autoSave": "Steuert das [automatische Speichern](https://code.visualstudio.com/docs/editor/codebasics#_save-auto-save) von Editoren, die ungespeicherte Änderungen haben.",
-      "files.autoSave.afterDelay": "Ein Editor mit Änderungen wird automatisch nach der konfigurierten `#files.autoSaveDelay#` gespeichert.",
-      "files.autoSave.off": "Ein Editor mit Änderungen wird nie automatisch gespeichert.",
-      "files.autoSave.onFocusChange": "Ein Editor mit Änderungen wird automatisch gespeichert, wenn der Editor den Fokus verliert.",
-      "files.autoSave.onWindowChange": "Ein Editor mit Änderungen wird automatisch gespeichert, wenn das Fenster den Fokus verliert.",
+      "editor.useTabStops": "Das Einfügen und Löschen von Leerzeichen erfolgt nach Tabulatorstopps.",
+      "editor.wordBasedSuggestions": "Steuert, ob Vervollständigungen auf der Grundlage von Wörtern im Dokument berechnet werden sollen.",
+      "editor.wordBasedSuggestionsMode": "Steuert, aus welchen Dokumenten die wortbasierten Vervollständigungen berechnet werden.",
       "formatOnSaveTimeout": "Zeitüberschreitung in Millisekunden, nach der die Formatierung, die beim Speichern der Datei ausgeführt wird, abgebrochen wird.",
       "persistClosedEditors": "Legt fest, ob der Verlauf des geschlossenen Editors für den Arbeitsbereich beim Neuladen des Fensters erhalten bleiben soll.",
       "showAllEditors": "Alle geöffneten Editoren anzeigen",
@@ -169,6 +204,7 @@
       "prepareDownloadLink": "Download-Link wird vorbereitet...",
       "processedOutOf": "Verarbeitet {0} von {1}",
       "replaceTitle": "Datei austauschen",
+      "uploadFailed": "Beim Hochladen einer Datei ist ein Fehler aufgetreten. {0}",
       "uploadFiles": "Dateien hochladen...",
       "uploadedOutOf": "Hochgeladen {0} von {1}"
     },
@@ -332,7 +368,6 @@
       "autoReveal": "Auto-Enthüllung",
       "clipboardWarn": "Der Zugriff auf die Zwischenablage wird verweigert. Überprüfen Sie die Berechtigung Ihres Browsers.",
       "clipboardWarnFirefox": "Die Zwischenablage-API ist nicht verfügbar. Sie kann durch die Einstellung '{0}' auf der Seite '{1}' aktiviert werden. Dann laden Sie Theia neu. Beachten Sie, dass FireFox dadurch vollen Zugriff auf die Systemzwischenablage erhält.",
-      "noFolderOpened": "Kein Ordner geöffnet",
       "refresh": "Aktualisieren im Explorer",
       "reveal": "Enthüllen im Explorer",
       "toggleHiddenFiles": "Versteckte Dateien umschalten"
@@ -353,6 +388,9 @@
       "alreadyRunning": "Die gehostete Instanz läuft bereits.",
       "debugInstance": "Debug-Instanz",
       "debugMode": "Verwendung von inspect oder inspect-brk zur Fehlersuche in Node.js",
+      "debugPorts": {
+        "debugPort": "Zu verwendender Port für das Node.js-Debugging dieses Servers"
+      },
       "devHost": "Entwicklung Host",
       "failed": "Die gehostete Plugin-Instanz konnte nicht ausgeführt werden: {0}",
       "hostedPlugin": "Gehostetes Plugin",
@@ -384,6 +422,10 @@
       "webviewTrace": "Steuert die Kommunikationsverfolgung mit Webviews.",
       "webviewWarnIfUnsecure": "Warnt Benutzer, dass Webviews derzeit unsicher eingesetzt werden."
     },
+    "preferences": {
+      "hostedPlugin": "Gehostetes Plugin",
+      "toolbar": "Symbolleiste"
+    },
     "preview": {
       "openByDefault": "Öffnen Sie standardmäßig die Vorschau anstelle des Editors."
     },
@@ -406,6 +448,9 @@
       "config.untrackedChanges.hidden": "versteckt",
       "config.untrackedChanges.mixed": "gemischt",
       "config.untrackedChanges.separate": "getrennt",
+      "dirtyDiff": {
+        "close": "Schließen Ändern Peek-Ansicht"
+      },
       "history": "Geschichte",
       "noRepositoryFound": "Kein Repository gefunden",
       "unamend": "Ändern",
@@ -453,6 +498,7 @@
     },
     "test": {
       "cancelAllTestRuns": "Alle Testläufe abbrechen",
+      "stackFrameAt": "unter",
       "testRunDefaultName": "{0} laufen. {1}",
       "testRuns": "Testläufe"
     },
@@ -515,7 +561,6 @@
       "confirmMessage.uriMultiple": "Wollen Sie wirklich alle {0} ausgewählten Dateien löschen?",
       "confirmMessage.uriSingle": "Wollen Sie wirklich {0} löschen?",
       "duplicate": "Duplizieren",
-      "failApply": "Änderungen konnten nicht auf neue Datei angewendet werden",
       "failSaveAs": "Kann \"{0}\" für das aktuelle Widget nicht ausführen.",
       "newFilePlaceholder": "File Name",
       "newFolderPlaceholder": "Folder Name",

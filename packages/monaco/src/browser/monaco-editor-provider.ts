@@ -211,7 +211,7 @@ export class MonacoEditorProvider {
         return editor;
     }
 
-    protected updateReadOnlyMessage(options: MonacoEditor.IOptions, readOnly: boolean | MarkdownString ): void {
+    protected updateReadOnlyMessage(options: MonacoEditor.IOptions, readOnly: boolean | MarkdownString): void {
         options.readOnlyMessage = MarkdownString.is(readOnly) ? readOnly : undefined;
     }
 
@@ -254,6 +254,7 @@ export class MonacoEditorProvider {
         if (!this.shouldFormat(editor, event)) {
             return [];
         }
+        const edits: monaco.editor.IIdentifiedSingleEditOperation[] = [];
         const overrideIdentifier = editor.document.languageId;
         const uri = editor.uri.toString();
         const formatOnSave = this.editorPreferences.get({ preferenceName: 'editor.formatOnSave', overrideIdentifier }, undefined, uri);
@@ -268,7 +269,11 @@ export class MonacoEditorProvider {
         if (shouldRemoveWhiteSpace) {
             await editor.runAction('editor.action.trimTrailingWhitespace');
         }
-        return [];
+        const insertFinalNewline = this.filePreferences.get({ preferenceName: 'files.insertFinalNewline', overrideIdentifier }, undefined, uri);
+        if (insertFinalNewline) {
+            edits.push(...this.insertFinalNewline(editor));
+        }
+        return edits;
     }
 
     protected get diffPreferencePrefixes(): string[] {
@@ -415,4 +420,70 @@ export class MonacoEditorProvider {
         }
     };
 
+    async createEmbeddedDiffEditor(parentEditor: MonacoEditor, node: HTMLElement, originalUri: URI, modifiedUri: URI = parentEditor.uri,
+        options?: MonacoDiffEditor.IOptions): Promise<MonacoDiffEditor> {
+        options = {
+            scrollBeyondLastLine: true,
+            overviewRulerLanes: 2,
+            fixedOverflowWidgets: true,
+            minimap: { enabled: false },
+            renderSideBySide: false,
+            readOnly: true,
+            renderIndicators: false,
+            diffAlgorithm: 'advanced',
+            stickyScroll: { enabled: false },
+            ...options,
+            scrollbar: {
+                verticalScrollbarSize: 14,
+                horizontal: 'auto',
+                useShadows: true,
+                verticalHasArrows: false,
+                horizontalHasArrows: false,
+                ...options?.scrollbar
+            }
+        };
+        const uri = DiffUris.encode(originalUri, modifiedUri);
+        return await this.doCreateEditor(uri, async (override, toDispose) =>
+            new MonacoDiffEditor(
+                uri,
+                node,
+                await this.getModel(originalUri, toDispose),
+                await this.getModel(modifiedUri, toDispose),
+                this.services,
+                this.diffNavigatorFactory,
+                options,
+                override,
+                parentEditor
+            )
+        ) as MonacoDiffEditor;
+    }
+
+    protected insertFinalNewline(editor: MonacoEditor): monaco.editor.IIdentifiedSingleEditOperation[] {
+        const model = editor.document && editor.document.textEditorModel;
+        if (!model) {
+            return [];
+        }
+
+        const lines = model?.getLineCount();
+        if (lines === 0) {
+            return [];
+        }
+
+        const lastLine = model?.getLineContent(lines);
+        if (lastLine.trim() === '') {
+            return [];
+        }
+
+        const lastLineMaxColumn = model?.getLineMaxColumn(lines);
+        const range = {
+            startLineNumber: lines,
+            startColumn: lastLineMaxColumn,
+            endLineNumber: lines,
+            endColumn: lastLineMaxColumn
+        };
+        return [{
+            range,
+            text: model?.getEOL()
+        }];
+    }
 }

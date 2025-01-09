@@ -36,15 +36,21 @@ export interface UpdateRenderersMessage {
     readonly rendererData: readonly RendererMetadata[];
 }
 
+export interface CellOutputChange {
+    readonly cellHandle: number;
+    readonly newOutputs?: Output[];
+    readonly start: number;
+    readonly deleteCount: number;
+}
+
 export interface OutputChangedMessage {
     readonly type: 'outputChanged';
-    readonly newOutputs?: Output[];
-    readonly deleteStart?: number;
-    readonly deleteCount?: number;
+    changes: CellOutputChange[];
 }
 
 export interface ChangePreferredMimetypeMessage {
     readonly type: 'changePreferredMimetype';
+    readonly cellHandle: number;
     readonly outputId: string;
     readonly mimeType: string;
 }
@@ -59,7 +65,62 @@ export interface PreloadMessage {
     readonly resources: string[];
 }
 
-export type ToWebviewMessage = UpdateRenderersMessage | OutputChangedMessage | ChangePreferredMimetypeMessage | CustomRendererMessage | KernelMessage | PreloadMessage;
+export interface notebookStylesMessage {
+    readonly type: 'notebookStyles';
+    styles: Record<string, string>;
+}
+
+export interface CellHeigthsMessage {
+    type: 'cellHeigths';
+    cellHeigths: Record<number, number>;
+}
+
+export interface CellsMoved {
+    type: 'cellMoved';
+    cellHandle: number;
+    toIndex: number;
+}
+
+export interface CellsSpliced {
+    type: 'cellsSpliced';
+    /**
+     * Cell handle for the start cell.
+     * -1 in case of new Cells are added at the end.
+     */
+    startCellHandle: number;
+    deleteCount: number;
+    newCells: number[];
+}
+
+export interface CellsChangedMessage {
+    type: 'cellsChanged';
+    changes: Array<CellsMoved | CellsSpliced>;
+}
+
+export interface CellHeightUpdateMessage {
+    type: 'cellHeightUpdate';
+    cellKind: number;
+    cellHandle: number;
+    height: number;
+}
+
+export interface OutputVisibilityChangedMessage {
+    type: 'outputVisibilityChanged';
+    cellHandle: number;
+    visible: boolean;
+}
+
+export type ToWebviewMessage = UpdateRenderersMessage
+    | OutputChangedMessage
+    | ChangePreferredMimetypeMessage
+    | CustomRendererMessage
+    | KernelMessage
+    | PreloadMessage
+    | notebookStylesMessage
+    | CellHeigthsMessage
+    | CellHeightUpdateMessage
+    | CellsChangedMessage
+    | OutputVisibilityChangedMessage;
 
 export interface WebviewInitialized {
     readonly type: 'initialized';
@@ -67,7 +128,10 @@ export interface WebviewInitialized {
 
 export interface OnDidRenderOutput {
     readonly type: 'didRenderOutput';
-    contentHeight: number;
+    cellHandle: number;
+    outputId: string;
+    outputHeight: number;
+    bodyHeight: number;
 }
 
 export interface WheelMessage {
@@ -76,7 +140,35 @@ export interface WheelMessage {
     readonly deltaX: number;
 }
 
-export type FromWebviewMessage = WebviewInitialized | OnDidRenderOutput | WheelMessage | CustomRendererMessage | KernelMessage;
+export interface InputFocusChange {
+    readonly type: 'inputFocusChanged';
+    readonly focused: boolean;
+}
+
+export interface CellOuputFocus {
+    readonly type: 'cellFocusChanged';
+    readonly cellHandle: number;
+}
+
+export interface CellHeightRequest {
+    readonly type: 'cellHeightRequest';
+    readonly cellHandle: number;
+}
+
+export interface BodyHeightChange {
+    readonly type: 'bodyHeightChange';
+    readonly height: number;
+}
+
+export type FromWebviewMessage = WebviewInitialized
+    | OnDidRenderOutput
+    | WheelMessage
+    | CustomRendererMessage
+    | KernelMessage
+    | InputFocusChange
+    | CellOuputFocus
+    | CellHeightRequest
+    | BodyHeightChange;
 
 export interface Output {
     id: string

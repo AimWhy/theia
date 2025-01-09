@@ -17,9 +17,10 @@
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import { inject, injectable, named, postConstruct } from '@theia/core/shared/inversify';
-import { ContributionProvider, Disposable, Event, Emitter, ILogger, DisposableCollection, Channel, OS } from '@theia/core';
+import { ContributionProvider, Disposable, Event, Emitter, ILogger, DisposableCollection, Channel, OS, generateUuid } from '@theia/core';
 import {
-    Widget, Message, StatefulWidget, isFirefox, MessageLoop, KeyCode, codicon, ExtractableWidget, ContextMenuRenderer
+    Widget, Message, StatefulWidget, isFirefox, MessageLoop, KeyCode, ExtractableWidget, ContextMenuRenderer,
+    DecorationStyle
 } from '@theia/core/lib/browser';
 import { isOSX } from '@theia/core/lib/common';
 import { WorkspaceService } from '@theia/workspace/lib/browser';
@@ -29,7 +30,8 @@ import { IBaseTerminalServer, TerminalProcessInfo, TerminalExitReason } from '..
 import { TerminalWatcher } from '../common/terminal-watcher';
 import {
     TerminalWidgetOptions, TerminalWidget, TerminalDimensions, TerminalExitStatus, TerminalLocationOptions,
-    TerminalLocation
+    TerminalLocation,
+    TerminalBuffer
 } from './base/terminal-widget';
 import { Deferred } from '@theia/core/lib/common/promise-util';
 import { TerminalPreferences } from './terminal-preferences';
@@ -47,6 +49,7 @@ import { MarkdownString, MarkdownStringImpl } from '@theia/core/lib/common/markd
 import { EnhancedPreviewWidget } from '@theia/core/lib/browser/widgets/enhanced-preview-widget';
 import { MarkdownRenderer, MarkdownRendererFactory } from '@theia/core/lib/browser/markdown-rendering/markdown-renderer';
 import { RemoteConnectionProvider, ServiceConnectionProvider } from '@theia/core/lib/browser/messaging/service-connection-provider';
+import { ColorRegistry } from '@theia/core/lib/browser/color-registry';
 
 export const TERMINAL_WIDGET_FACTORY_ID = 'terminal';
 
@@ -58,6 +61,23 @@ export interface TerminalWidgetFactoryOptions extends Partial<TerminalWidgetOpti
 export const TerminalContribution = Symbol('TerminalContribution');
 export interface TerminalContribution {
     onCreate(term: TerminalWidgetImpl): void;
+}
+
+class TerminalBufferImpl implements TerminalBuffer {
+    constructor(private readonly term: Terminal) {
+    }
+
+    get length(): number {
+        return this.term.buffer.active.length;
+    };
+    getLines(start: number, length: number): string[] {
+        const result: string[] = [];
+        for (let i = 0; i < length && this.length - 1 - i >= 0; i++) {
+            result.push(this.term.buffer.active.getLine(this.length - 1 - i)!.translateToString());
+        }
+        return result;
+    }
+
 }
 
 @injectable()
@@ -86,6 +106,7 @@ export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget
     protected isAttachedCloseListener: boolean = false;
     protected shown = false;
     protected enhancedPreviewNode: Node | undefined;
+    protected styleElement: HTMLStyleElement | undefined;
     override lastCwd = new URI();
 
     @inject(WorkspaceService) protected readonly workspaceService: WorkspaceService;
@@ -101,6 +122,7 @@ export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget
     @inject(TerminalSearchWidgetFactory) protected readonly terminalSearchBoxFactory: TerminalSearchWidgetFactory;
     @inject(TerminalCopyOnSelectionHandler) protected readonly copyOnSelectionHandler: TerminalCopyOnSelectionHandler;
     @inject(TerminalThemeService) protected readonly themeService: TerminalThemeService;
+    @inject(ColorRegistry) protected readonly colorRegistry: ColorRegistry;
     @inject(ShellCommandBuilder) protected readonly shellCommandBuilder: ShellCommandBuilder;
     @inject(ContextMenuRenderer) protected readonly contextMenuRenderer: ContextMenuRenderer;
     @inject(MarkdownRendererFactory) protected readonly markdownRendererFactory: MarkdownRendererFactory;
@@ -123,6 +145,9 @@ export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget
     protected readonly onDataEmitter = new Emitter<string>();
     readonly onData: Event<string> = this.onDataEmitter.event;
 
+    protected readonly onOutputEmitter = new Emitter<string>();
+    readonly onOutput: Event<string> = this.onOutputEmitter.event;
+
     protected readonly onKeyEmitter = new Emitter<{ key: string, domEvent: KeyboardEvent }>();
     readonly onKey: Event<{ key: string, domEvent: KeyboardEvent }> = this.onKeyEmitter.event;
 
@@ -134,15 +159,15 @@ export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget
 
     protected readonly toDisposeOnConnect = new DisposableCollection();
 
+    private _buffer: TerminalBuffer;
+    override get buffer(): TerminalBuffer {
+        return this._buffer;
+    }
+
     @postConstruct()
     protected init(): void {
         this.setTitle(this.options.title || TerminalWidgetImpl.LABEL);
-
-        if (this.options.iconClass) {
-            this.title.iconClass = this.options.iconClass;
-        } else {
-            this.title.iconClass = codicon('terminal');
-        }
+        this.setIconClass();
 
         if (this.options.kind) {
             this.terminalKind = this.options.kind;
@@ -174,6 +199,7 @@ export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget
             fastScrollSensitivity: this.preferences['terminal.integrated.fastScrollSensitivity'],
             theme: this.themeService.theme
         });
+        this._buffer = new TerminalBufferImpl(this.term);
 
         this.fitAddon = new FitAddon();
         this.term.loadAddon(this.fitAddon);
@@ -186,7 +212,10 @@ export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget
             this.update();
         }));
 
-        this.toDispose.push(this.themeService.onDidChange(() => this.term.options.theme = this.themeService.theme));
+        this.toDispose.push(this.themeService.onDidChange(() => {
+            this.term.options.theme = this.themeService.theme;
+            this.setIconClass();
+        }));
         this.attachCustomKeyEventHandler();
         const titleChangeListenerDispose = this.term.onTitleChange((title: string) => {
             if (this.options.useServerTitle) {
@@ -304,6 +333,31 @@ export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget
         this.term.options.lineHeight = this.preferences.get('terminal.integrated.lineHeight');
         this.term.options.scrollback = this.preferences.get('terminal.integrated.scrollback');
         this.term.options.fastScrollSensitivity = this.preferences.get('terminal.integrated.fastScrollSensitivity');
+    }
+
+    protected setIconClass(): void {
+        this.styleElement?.remove();
+        if (this.options.iconClass) {
+            const iconClass = this.options.iconClass;
+            if (typeof iconClass === 'string') {
+                this.title.iconClass = iconClass;
+            } else {
+                const iconClasses: string[] = [];
+                iconClasses.push(iconClass.id);
+                if (iconClass.color) {
+                    this.styleElement = DecorationStyle.createStyleElement(`${this.terminalId}-terminal-style`);
+                    const classId = 'terminal-icon-' + generateUuid().replace(/-/g, '');
+                    const color = this.colorRegistry.getCurrentColor(iconClass.color.id);
+                    this.styleElement.textContent = `
+                        .${classId}::before {
+                            color: ${color};
+                        }
+                    `;
+                    iconClasses.push(classId);
+                }
+                this.title.iconClass = iconClasses.join(' ');
+            }
+        }
     }
 
     private setCursorBlink(blink: boolean): void {
@@ -711,6 +765,7 @@ export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget
     write(data: string): void {
         if (this.termOpened) {
             this.term.write(data);
+            this.onOutputEmitter.fire(data);
         } else {
             this.initialData += data;
         }
@@ -762,6 +817,7 @@ export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget
 
     writeLine(text: string): void {
         this.term.writeln(text);
+        this.onOutputEmitter.fire(text + '\n');
     }
 
     get onTerminalDidClose(): Event<TerminalWidget> {
@@ -783,6 +839,7 @@ export class TerminalWidgetImpl extends TerminalWidget implements StatefulWidget
             // don't use preview node anymore. rendered markdown will be disposed on super call
             this.enhancedPreviewNode = undefined;
         }
+        this.styleElement?.remove();
         super.dispose();
     }
 

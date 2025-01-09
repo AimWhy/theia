@@ -23,7 +23,7 @@ import {
 import { ElectronMainMenuFactory } from './electron-main-menu-factory';
 import { ContextMenuContext } from '../../browser/menu/context-menu-context';
 import { MenuPath, MenuContribution, MenuModelRegistry } from '../../common';
-import { BrowserContextMenuRenderer } from '../../browser/menu/browser-context-menu-renderer';
+import { BrowserContextMenuAccess, BrowserContextMenuRenderer } from '../../browser/menu/browser-context-menu-renderer';
 
 export class ElectronContextMenuAccess extends ContextMenuAccess {
     constructor(readonly menuHandle: Promise<number>) {
@@ -104,16 +104,26 @@ export class ElectronContextMenuRenderer extends BrowserContextMenuRenderer {
             const menu = this.electronMenuFactory.createElectronContextMenu(menuPath, args, context, contextKeyService, skipSingleRootNode);
             const { x, y } = coordinateFromAnchor(anchor);
 
+            const windowName = options.context?.ownerDocument.defaultView?.Window.name;
+
             const menuHandle = window.electronTheiaCore.popup(menu, x, y, () => {
                 if (onHide) {
                     onHide();
                 }
-            });
+            }, windowName);
             // native context menu stops the event loop, so there is no keyboard events
             this.context.resetAltPressed();
             return new ElectronContextMenuAccess(menuHandle);
         } else {
-            return super.doRender(options);
+            const menuAccess = super.doRender(options);
+            const node = (menuAccess as BrowserContextMenuAccess).menu.node;
+            const topPanelHeight = document.getElementById('theia-top-panel')?.clientHeight ?? 0;
+            // ensure the context menu is not displayed outside of the main area
+            if (node.style.top && parseInt(node.style.top.substring(0, node.style.top.length - 2)) < topPanelHeight) {
+                node.style.top = `${topPanelHeight}px`;
+                node.style.maxHeight = `calc(${node.style.maxHeight} - ${topPanelHeight}px)`;
+            }
+            return menuAccess;
         }
     }
 

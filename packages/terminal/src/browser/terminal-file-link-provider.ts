@@ -14,7 +14,7 @@
 // SPDX-License-Identifier: EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0
 // *****************************************************************************
 
-import { OS, Path } from '@theia/core';
+import { OS, Path, QuickInputService } from '@theia/core';
 import { OpenerService } from '@theia/core/lib/browser';
 import URI from '@theia/core/lib/common/uri';
 import { inject, injectable } from '@theia/core/shared/inversify';
@@ -23,12 +23,16 @@ import { FileService } from '@theia/filesystem/lib/browser/file-service';
 import { TerminalWidget } from './base/terminal-widget';
 import { TerminalLink, TerminalLinkProvider } from './terminal-link-provider';
 import { TerminalWidgetImpl } from './terminal-widget-impl';
-
+import { FileSearchService } from '@theia/file-search/lib/common/file-search-service';
+import { WorkspaceService } from '@theia/workspace/lib/browser';
 @injectable()
 export class FileLinkProvider implements TerminalLinkProvider {
 
     @inject(OpenerService) protected readonly openerService: OpenerService;
+    @inject(QuickInputService) protected readonly quickInputService: QuickInputService;
     @inject(FileService) protected fileService: FileService;
+    @inject(FileSearchService) protected searchService: FileSearchService;
+    @inject(WorkspaceService) protected readonly workspaceService: WorkspaceService;
 
     async provideLinks(line: string, terminal: TerminalWidget): Promise<TerminalLink[]> {
         const links: TerminalLink[] = [];
@@ -57,14 +61,19 @@ export class FileLinkProvider implements TerminalLinkProvider {
             const toOpen = await this.toURI(match, await this.getCwd(terminal));
             if (toOpen) {
                 // TODO: would be better to ask the opener service, but it returns positively even for unknown files.
-                try {
-                    const stat = await this.fileService.resolve(toOpen);
-                    return !stat.isDirectory;
-                } catch { }
+                return this.isValidFileURI(toOpen);
             }
         } catch (err) {
             console.trace('Error validating ' + match, err);
         }
+        return false;
+    }
+
+    protected async isValidFileURI(uri: URI): Promise<boolean> {
+        try {
+            const stat = await this.fileService.resolve(uri);
+            return !stat.isDirectory;
+        } catch { }
         return false;
     }
 
@@ -97,8 +106,11 @@ export class FileLinkProvider implements TerminalLinkProvider {
         if (!toOpen) {
             return;
         }
-
         const position = await this.extractPosition(match);
+        return this.openURI(toOpen, position);
+    }
+
+    async openURI(toOpen: URI, position: Position): Promise<void> {
         let options = {};
         if (position) {
             options = { selection: { start: position } };
@@ -108,7 +120,7 @@ export class FileLinkProvider implements TerminalLinkProvider {
             const opener = await this.openerService.getOpener(toOpen, options);
             opener.open(toOpen, options);
         } catch (err) {
-            console.error('Cannot open link ' + match, err);
+            console.error('Cannot open link ' + toOpen, err);
         }
     }
 
@@ -120,7 +132,7 @@ export class FileLinkProvider implements TerminalLinkProvider {
             return info;
         }
 
-        const lineAndColumnMatchIndex = OS.backend.isWindows ? winLineAndColumnMatchIndex : unixLineAndColumnMatchIndex;
+        const lineAndColumnMatchIndex = this.getLineAndColumnMatchIndex();
         for (let i = 0; i < lineAndColumnClause.length; i++) {
             const lineMatchIndex = lineAndColumnMatchIndex + (lineAndColumnClauseGroupCount * i);
             const rowNumber = matches[lineMatchIndex];
@@ -137,6 +149,9 @@ export class FileLinkProvider implements TerminalLinkProvider {
         return info;
     }
 
+    protected getLineAndColumnMatchIndex(): number {
+        return OS.backend.isWindows ? winLineAndColumnMatchIndex : unixLineAndColumnMatchIndex;
+    }
 }
 
 @injectable()
@@ -150,6 +165,80 @@ export class FileDiffPreLinkProvider extends FileLinkProvider {
 export class FileDiffPostLinkProvider extends FileLinkProvider {
     override async createRegExp(): Promise<RegExp> {
         return /^\+\+\+ b\/(\S*)/g;
+    }
+}
+
+@injectable()
+export class LocalFileLinkProvider extends FileLinkProvider {
+    override async createRegExp(): Promise<RegExp> {
+        // match links that might not start with a separator, e.g. 'foo.bar', but don't match single words e.g. 'foo'
+        const baseLocalUnixLinkClause =
+            '((' + pathPrefix + '|' +
+            '(' + excludedPathCharactersClause + '+(' + pathSeparatorClause + '|' + '\\.' + ')' + excludedPathCharactersClause + '+))' +
+            '(' + pathSeparatorClause + '(' + excludedPathCharactersClause + ')+)*)';
+
+        const baseLocalWindowsLinkClause =
+            '((' + winPathPrefix + '|' +
+            '(' + winExcludedPathCharactersClause + '+(' + winPathSeparatorClause + '|' + '\\.' + ')' + winExcludedPathCharactersClause + '+))' +
+            '(' + winPathSeparatorClause + '(' + winExcludedPathCharactersClause + ')+)*)';
+
+        const baseLocalLinkClause = OS.backend.isWindows ? baseLocalWindowsLinkClause : baseLocalUnixLinkClause;
+        return new RegExp(`${baseLocalLinkClause}(${lineAndColumnClause})`, 'g');
+    }
+
+    override async provideLinks(line: string, terminal: TerminalWidget): Promise<TerminalLink[]> {
+        const links: TerminalLink[] = [];
+        const regExp = await this.createRegExp();
+        let regExpResult: RegExpExecArray | null;
+        while (regExpResult = regExp.exec(line)) {
+            const match = regExpResult[0];
+            const searchTerm = await this.extractPath(match);
+            if (searchTerm) {
+                links.push({
+                    startIndex: regExp.lastIndex - match.length,
+                    length: match.length,
+                    handle: async () => {
+                        const fileUri = await this.isValidWorkspaceFile(searchTerm, terminal);
+                        if (fileUri) {
+                            const position = await this.extractPosition(match);
+                            this.openURI(fileUri, position);
+                        } else {
+                            this.quickInputService.open(match);
+                        }
+                    }
+                });
+            }
+        }
+        return links;
+    }
+
+    protected override getLineAndColumnMatchIndex(): number {
+        return OS.backend.isWindows ? 14 : 12;
+    }
+
+    protected async isValidWorkspaceFile(searchTerm: string | undefined, terminal: TerminalWidget): Promise<URI | undefined> {
+        if (!searchTerm) {
+            return undefined;
+        }
+        const cwd = await this.getCwd(terminal);
+        // remove any leading ./, ../ etc. as they can't be searched
+        searchTerm = searchTerm.replace(/^(\.+[\\/])+/, '');
+        const workspaceRoots = this.workspaceService.tryGetRoots().map(root => root.resource.toString());
+        // try and find a matching file in the workspace
+        const files = (await this.searchService.find(searchTerm, {
+            rootUris: [cwd.toString(), ...workspaceRoots],
+            fuzzyMatch: true,
+            limit: 1
+        }));
+        // checks if the string ends in a separator + searchTerm
+        const regex = new RegExp(`[\\\\|\\/]${searchTerm}$`);
+        if (files.length && regex.test(files[0])) {
+            const fileUri = new URI(files[0]);
+            const valid = await this.isValidFileURI(fileUri);
+            if (valid) {
+                return fileUri;
+            }
+        }
     }
 }
 

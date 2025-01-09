@@ -50,7 +50,7 @@ export class NotebookExecutionService {
     @inject(NotebookKernelQuickPickService)
     protected notebookKernelQuickPickService: NotebookKernelQuickPickService;
 
-    private readonly cellExecutionParticipants = new Set<CellExecutionParticipant>();
+    protected readonly cellExecutionParticipants = new Set<CellExecutionParticipant>();
 
     async executeNotebookCells(notebook: NotebookModel, cells: Iterable<NotebookCellModel>): Promise<void> {
         const cellsArr = Array.from(cells)
@@ -88,6 +88,15 @@ export class NotebookExecutionService {
 
         // request execution
         if (validCellExecutions.length > 0) {
+            const cellRemoveListener = notebook.onDidAddOrRemoveCell(e => {
+                if (e.rawEvent.changes.some(c => c.deleteCount > 0)) {
+                    const executionsToCancel = validCellExecutions.filter(exec => !notebook.cells.find(cell => cell.handle === exec.cellHandle));
+                    if (executionsToCancel.length > 0) {
+                        kernel.cancelNotebookCellExecution(notebook.uri, executionsToCancel.map(c => c.cellHandle));
+                        executionsToCancel.forEach(exec => exec.complete({}));
+                    }
+                }
+            });
             await this.runExecutionParticipants(validCellExecutions);
 
             this.notebookKernelService.selectKernelForNotebook(kernel, notebook);
@@ -97,6 +106,9 @@ export class NotebookExecutionService {
             if (unconfirmed.length) {
                 unconfirmed.forEach(exe => exe.complete({}));
             }
+
+            cellRemoveListener.dispose();
+
         }
     }
 
@@ -105,7 +117,7 @@ export class NotebookExecutionService {
         return Disposable.create(() => this.cellExecutionParticipants.delete(participant));
     }
 
-    private async runExecutionParticipants(executions: CellExecution[]): Promise<void> {
+    protected async runExecutionParticipants(executions: CellExecution[]): Promise<void> {
         for (const participant of this.cellExecutionParticipants) {
             await participant.onWillExecuteCell(executions);
         }

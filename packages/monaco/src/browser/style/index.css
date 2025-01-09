@@ -21,7 +21,6 @@
 .monaco-editor .zone-widget {
   position: absolute;
   z-index: 10;
-  background-color: var(--theia-editorWidget-background);
 }
 
 .monaco-editor .zone-widget .zone-widget-container {
@@ -175,6 +174,10 @@
 .quick-input-list .monaco-icon-label.file-icon {
   display: flex;
   text-align: left;
+}
+
+.quick-input-list .monaco-icon-label::before {
+  height: 22px;
 }
 
 .codicon-file.default-file-icon.file-icon {

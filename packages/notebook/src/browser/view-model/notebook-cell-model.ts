@@ -20,36 +20,33 @@
 
 import { Disposable, DisposableCollection, Emitter, Event, URI } from '@theia/core';
 import { inject, injectable, interfaces, postConstruct } from '@theia/core/shared/inversify';
-import { ContextKeyChangeEvent } from '@theia/core/lib/browser/context-key-service';
 import { MonacoEditorModel } from '@theia/monaco/lib/browser/monaco-editor-model';
-import { MonacoTextModelService } from '@theia/monaco/lib/browser/monaco-text-model-service';
+import { type MonacoEditor } from '@theia/monaco/lib/browser/monaco-editor';
 import {
     CellKind, NotebookCellCollapseState, NotebookCellInternalMetadata,
     NotebookCellMetadata, CellOutput, CellData, CellOutputItem
 } from '../../common';
 import { NotebookCellOutputsSplice } from '../notebook-types';
+import { NotebookMonacoTextModelService } from '../service/notebook-monaco-text-model-service';
 import { NotebookCellOutputModel } from './notebook-cell-output-model';
+import { PreferenceService } from '@theia/core/lib/browser';
+import { NotebookPreferences } from '../contributions/notebook-preferences';
+import { LanguageService } from '@theia/core/lib/browser/language-service';
+import { NotebookEditorFindMatch, NotebookEditorFindMatchOptions } from '../view/notebook-find-widget';
+import { Range } from '@theia/core/shared/vscode-languageserver-protocol';
 
 export const NotebookCellModelFactory = Symbol('NotebookModelFactory');
 export type NotebookCellModelFactory = (props: NotebookCellModelProps) => NotebookCellModel;
 
-export function createNotebookCellModelContainer(parent: interfaces.Container, props: NotebookCellModelProps,
-    notebookCellContextManager: new (...args: never[]) => unknown): interfaces.Container {
+export type CellEditorFocusRequest = number | 'lastLine' | undefined;
+
+export function createNotebookCellModelContainer(parent: interfaces.Container, props: NotebookCellModelProps): interfaces.Container {
     const child = parent.createChild();
 
     child.bind(NotebookCellModelProps).toConstantValue(props);
-    // We need the constructor as property here to avoid circular dependencies for the context manager
-    child.bind(NotebookCellContextManager).to(notebookCellContextManager).inSingletonScope();
     child.bind(NotebookCellModel).toSelf();
 
     return child;
-}
-
-const NotebookCellContextManager = Symbol('NotebookCellContextManager');
-interface NotebookCellContextManager {
-    updateCellContext(cell: NotebookCellModel, context: HTMLElement): void;
-    dispose(): void;
-    onDidChangeContext: Event<ContextKeyChangeEvent>;
 }
 
 export interface CellInternalMetadataChangedEvent {
@@ -65,6 +62,10 @@ export interface NotebookCell {
     metadata: NotebookCellMetadata;
     internalMetadata: NotebookCellInternalMetadata;
     text: string;
+    /**
+     * The selection of the cell. Zero-based line/character coordinates.
+     */
+    selection: Range | undefined;
     onDidChangeOutputs?: Event<NotebookCellOutputsSplice>;
     onDidChangeOutputItems?: Event<CellOutput>;
     onDidChangeLanguage: Event<string>;
@@ -91,33 +92,61 @@ export interface NotebookCellModelProps {
 export class NotebookCellModel implements NotebookCell, Disposable {
 
     protected readonly onDidChangeOutputsEmitter = new Emitter<NotebookCellOutputsSplice>();
-    readonly onDidChangeOutputs: Event<NotebookCellOutputsSplice> = this.onDidChangeOutputsEmitter.event;
+    readonly onDidChangeOutputs = this.onDidChangeOutputsEmitter.event;
 
     protected readonly onDidChangeOutputItemsEmitter = new Emitter<CellOutput>();
-    readonly onDidChangeOutputItems: Event<CellOutput> = this.onDidChangeOutputItemsEmitter.event;
+    readonly onDidChangeOutputItems = this.onDidChangeOutputItemsEmitter.event;
 
     protected readonly onDidChangeContentEmitter = new Emitter<'content' | 'language' | 'mime'>();
-    readonly onDidChangeContent: Event<'content' | 'language' | 'mime'> = this.onDidChangeContentEmitter.event;
+    readonly onDidChangeContent = this.onDidChangeContentEmitter.event;
 
     protected readonly onDidChangeMetadataEmitter = new Emitter<void>();
-    readonly onDidChangeMetadata: Event<void> = this.onDidChangeMetadataEmitter.event;
+    readonly onDidChangeMetadata = this.onDidChangeMetadataEmitter.event;
 
     protected readonly onDidChangeInternalMetadataEmitter = new Emitter<CellInternalMetadataChangedEvent>();
-    readonly onDidChangeInternalMetadata: Event<CellInternalMetadataChangedEvent> = this.onDidChangeInternalMetadataEmitter.event;
+    readonly onDidChangeInternalMetadata = this.onDidChangeInternalMetadataEmitter.event;
 
     protected readonly onDidChangeLanguageEmitter = new Emitter<string>();
-    readonly onDidChangeLanguage: Event<string> = this.onDidChangeLanguageEmitter.event;
+    readonly onDidChangeLanguage = this.onDidChangeLanguageEmitter.event;
 
     protected readonly onDidRequestCellEditChangeEmitter = new Emitter<boolean>();
     readonly onDidRequestCellEditChange = this.onDidRequestCellEditChangeEmitter.event;
 
-    @inject(NotebookCellContextManager)
-    readonly notebookCellContextManager: NotebookCellContextManager;
+    protected readonly onWillFocusCellEditorEmitter = new Emitter<CellEditorFocusRequest>();
+    readonly onWillFocusCellEditor = this.onWillFocusCellEditorEmitter.event;
+
+    protected readonly onWillBlurCellEditorEmitter = new Emitter<void>();
+    readonly onWillBlurCellEditor = this.onWillBlurCellEditorEmitter.event;
+
+    protected readonly onDidChangeEditorOptionsEmitter = new Emitter<MonacoEditor.IOptions>();
+    readonly onDidChangeEditorOptions = this.onDidChangeEditorOptionsEmitter.event;
+
+    protected readonly outputVisibilityChangeEmitter = new Emitter<boolean>();
+    readonly onDidChangeOutputVisibility = this.outputVisibilityChangeEmitter.event;
+
+    protected readonly onDidFindMatchesEmitter = new Emitter<NotebookCodeEditorFindMatch[]>();
+    readonly onDidFindMatches: Event<NotebookCodeEditorFindMatch[]> = this.onDidFindMatchesEmitter.event;
+
+    protected readonly onDidSelectFindMatchEmitter = new Emitter<NotebookCodeEditorFindMatch>();
+    readonly onDidSelectFindMatch: Event<NotebookCodeEditorFindMatch> = this.onDidSelectFindMatchEmitter.event;
+
+    protected onDidRequestCenterEditorEmitter = new Emitter<void>();
+    readonly onDidRequestCenterEditor = this.onDidRequestCenterEditorEmitter.event;
+
+    protected onDidCellHeightChangeEmitter = new Emitter<number>();
+    readonly onDidCellHeightChange = this.onDidCellHeightChangeEmitter.event;
 
     @inject(NotebookCellModelProps)
     protected readonly props: NotebookCellModelProps;
-    @inject(MonacoTextModelService)
-    protected readonly textModelService: MonacoTextModelService;
+
+    @inject(NotebookMonacoTextModelService)
+    protected readonly textModelService: NotebookMonacoTextModelService;
+
+    @inject(LanguageService)
+    protected readonly languageService: LanguageService;
+
+    @inject(PreferenceService)
+    protected readonly preferenceService: PreferenceService;
 
     get outputs(): NotebookCellOutputModel[] {
         return this._outputs;
@@ -127,6 +156,11 @@ export class NotebookCellModel implements NotebookCell, Disposable {
 
     get metadata(): NotebookCellMetadata {
         return this._metadata;
+    }
+
+    set metadata(newMetadata: NotebookCellMetadata) {
+        this._metadata = newMetadata;
+        this.onDidChangeMetadataEmitter.fire();
     }
 
     protected _metadata: NotebookCellMetadata;
@@ -152,23 +186,19 @@ export class NotebookCellModel implements NotebookCell, Disposable {
 
     protected textModel?: MonacoEditorModel;
 
-    protected htmlContext: HTMLLIElement;
-
-    get context(): HTMLLIElement {
-        return this.htmlContext;
-    }
-
     get text(): string {
-        return this.textModel ? this.textModel.getText() : this.source;
+        return this.textModel && !this.textModel.isDisposed() ? this.textModel.getText() : this.source;
     }
 
     get source(): string {
         return this.props.source;
     }
+
     set source(source: string) {
         this.props.source = source;
         this.textModel?.textEditorModel.setValue(source);
     }
+
     get language(): string {
         return this.props.language;
     }
@@ -178,14 +208,17 @@ export class NotebookCellModel implements NotebookCell, Disposable {
             return;
         }
 
-        this.props.language = newLanguage;
         if (this.textModel) {
             this.textModel.setLanguageId(newLanguage);
         }
 
-        this.language = newLanguage;
+        this.props.language = newLanguage;
         this.onDidChangeLanguageEmitter.fire(newLanguage);
         this.onDidChangeContentEmitter.fire('language');
+    }
+
+    get languageName(): string {
+        return this.languageService.getLanguage(this.language)?.name ?? this.language;
     }
 
     get uri(): URI {
@@ -198,18 +231,72 @@ export class NotebookCellModel implements NotebookCell, Disposable {
         return this.props.cellKind;
     }
 
+    protected _editing: boolean = false;
+    get editing(): boolean {
+        return this._editing;
+    }
+
+    protected _editorOptions: MonacoEditor.IOptions = {};
+    get editorOptions(): Readonly<MonacoEditor.IOptions> {
+        return this._editorOptions;
+    }
+
+    set editorOptions(options: MonacoEditor.IOptions) {
+        this._editorOptions = options;
+        this.onDidChangeEditorOptionsEmitter.fire(options);
+    }
+
+    protected _outputVisible: boolean = true;
+    get outputVisible(): boolean {
+        return this._outputVisible;
+    }
+
+    set outputVisible(visible: boolean) {
+        if (this._outputVisible !== visible) {
+            this._outputVisible = visible;
+            this.outputVisibilityChangeEmitter.fire(visible);
+        }
+    }
+
+    protected _selection: Range | undefined = undefined;
+
+    get selection(): Range | undefined {
+        return this._selection;
+    }
+
+    set selection(selection: Range | undefined) {
+        this._selection = selection;
+    }
+
+    protected _cellheight: number = 0;
+    get cellHeight(): number {
+        return this._cellheight;
+    }
+
+    set cellHeight(height: number) {
+        if (height !== this._cellheight) {
+            this.onDidCellHeightChangeEmitter.fire(height);
+            this._cellheight = height;
+        }
+    }
+
     @postConstruct()
     protected init(): void {
         this._outputs = this.props.outputs.map(op => new NotebookCellOutputModel(op));
         this._metadata = this.props.metadata ?? {};
         this._internalMetadata = this.props.internalMetadata ?? {};
-    }
 
-    refChanged(node: HTMLLIElement): void {
-        if (node) {
-            this.htmlContext = node;
-            this.notebookCellContextManager.updateCellContext(this, node);
-        }
+        this.editorOptions = {
+            lineNumbers: this.preferenceService.get(NotebookPreferences.NOTEBOOK_LINE_NUMBERS)
+        };
+        this.toDispose.push(this.preferenceService.onPreferenceChanged(e => {
+            if (e.preferenceName === NotebookPreferences.NOTEBOOK_LINE_NUMBERS) {
+                this.editorOptions = {
+                    ...this.editorOptions,
+                    lineNumbers: this.preferenceService.get(NotebookPreferences.NOTEBOOK_LINE_NUMBERS)
+                };
+            }
+        }));
     }
 
     dispose(): void {
@@ -219,19 +306,33 @@ export class NotebookCellModel implements NotebookCell, Disposable {
         this.onDidChangeMetadataEmitter.dispose();
         this.onDidChangeInternalMetadataEmitter.dispose();
         this.onDidChangeLanguageEmitter.dispose();
-        this.notebookCellContextManager.dispose();
-        this.textModel?.dispose();
         this.toDispose.dispose();
     }
 
     requestEdit(): void {
         if (!this.textModel || !this.textModel.readOnly) {
+            this._editing = true;
             this.onDidRequestCellEditChangeEmitter.fire(true);
         }
     }
 
     requestStopEdit(): void {
+        this._editing = false;
         this.onDidRequestCellEditChangeEmitter.fire(false);
+    }
+
+    requestFocusEditor(focusRequest?: CellEditorFocusRequest): void {
+        this.requestEdit();
+        this.onWillFocusCellEditorEmitter.fire(focusRequest);
+    }
+
+    requestBlurEditor(): void {
+        this.requestStopEdit();
+        this.onWillBlurCellEditorEmitter.fire();
+    }
+
+    requestCenterEditor(): void {
+        this.onDidRequestCenterEditorEmitter.fire();
     }
 
     spliceNotebookCellOutputs(splice: NotebookCellOutputsSplice): void {
@@ -298,13 +399,97 @@ export class NotebookCellModel implements NotebookCell, Disposable {
             return this.textModel;
         }
 
-        const ref = await this.textModelService.createModelReference(this.uri);
+        const ref = await this.textModelService.getOrCreateNotebookCellModelReference(this.uri);
         this.textModel = ref.object;
-        this.textModel.onDidChangeContent(e => {
+        this.toDispose.push(ref);
+        this.toDispose.push(this.textModel.onDidChangeContent(e => {
             this.props.source = e.model.getText();
-        });
+        }));
         return ref.object;
     }
+
+    restartOutputRenderer(outputId: string): void {
+        const output = this.outputs.find(out => out.outputId === outputId);
+        if (output) {
+            this.onDidChangeOutputItemsEmitter.fire(output);
+        }
+    }
+
+    onMarkdownFind: ((options: NotebookEditorFindMatchOptions) => NotebookEditorFindMatch[]) | undefined;
+
+    showMatch(selected: NotebookCodeEditorFindMatch): void {
+        this.onDidSelectFindMatchEmitter.fire(selected);
+    }
+
+    findMatches(options: NotebookEditorFindMatchOptions): NotebookEditorFindMatch[] {
+        if (this.cellKind === CellKind.Markup && !this.editing) {
+            return this.onMarkdownFind?.(options) ?? [];
+        }
+        if (!this.textModel) {
+            return [];
+        }
+        const matches = options.search ? this.textModel.findMatches({
+            searchString: options.search,
+            isRegex: options.regex,
+            matchCase: options.matchCase,
+            matchWholeWord: options.wholeWord
+        }) : [];
+        const editorFindMatches = matches.map(match => new NotebookCodeEditorFindMatch(this, match.range, this.textModel!));
+        this.onDidFindMatchesEmitter.fire(editorFindMatches);
+        return editorFindMatches;
+    }
+
+    replaceAll(matches: NotebookCodeEditorFindMatch[], value: string): void {
+        const editOperations = matches.map(match => ({
+            range: {
+                startColumn: match.range.start.character,
+                startLineNumber: match.range.start.line,
+                endColumn: match.range.end.character,
+                endLineNumber: match.range.end.line
+            },
+            text: value
+        }));
+        this.textModel?.textEditorModel.pushEditOperations(
+            // eslint-disable-next-line no-null/no-null
+            null,
+            editOperations,
+            // eslint-disable-next-line no-null/no-null
+            () => null);
+    }
+}
+
+export interface NotebookCellFindMatches {
+    matches: NotebookEditorFindMatch[];
+    selected: NotebookEditorFindMatch;
+}
+
+export class NotebookCodeEditorFindMatch implements NotebookEditorFindMatch {
+
+    selected = false;
+
+    constructor(readonly cell: NotebookCellModel, readonly range: Range, readonly textModel: MonacoEditorModel) {
+    }
+
+    show(): void {
+        this.cell.showMatch(this);
+    }
+    replace(value: string): void {
+        this.textModel.textEditorModel.pushEditOperations(
+            // eslint-disable-next-line no-null/no-null
+            null,
+            [{
+                range: {
+                    startColumn: this.range.start.character,
+                    startLineNumber: this.range.start.line,
+                    endColumn: this.range.end.character,
+                    endLineNumber: this.range.end.line
+                },
+                text: value
+            }],
+            // eslint-disable-next-line no-null/no-null
+            () => null);
+    }
+
 }
 
 function computeRunStartTimeAdjustment(oldMetadata: NotebookCellInternalMetadata, newMetadata: NotebookCellInternalMetadata): number | undefined {

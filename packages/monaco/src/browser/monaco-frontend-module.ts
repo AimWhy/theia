@@ -14,29 +14,15 @@
 // SPDX-License-Identifier: EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0
 // *****************************************************************************
 
-import * as MonacoNls from '@theia/monaco-editor-core/esm/vs/nls';
-import { nls } from '@theia/core/lib/common/nls';
-import { FormatType, Localization } from '@theia/core/lib/common/i18n/localization';
-
-Object.assign(MonacoNls, {
-    localize(_key: string, label: string, ...args: FormatType[]): string {
-        if (nls.locale) {
-            const defaultKey = nls.getDefaultKey(label);
-            if (defaultKey) {
-                return nls.localize(defaultKey, label, ...args);
-            }
-        }
-        return Localization.format(label, args);
-    }
-});
-
 import '../../src/browser/style/index.css';
 import { ContainerModule, interfaces } from '@theia/core/shared/inversify';
 import { MenuContribution, CommandContribution, quickInputServicePath } from '@theia/core/lib/common';
 import {
     FrontendApplicationContribution, KeybindingContribution,
     PreferenceService, PreferenceSchemaProvider, createPreferenceProxy,
-    PreferenceScope, PreferenceChange, OVERRIDE_PROPERTY_PATTERN, QuickInputService, StylingParticipant, WebSocketConnectionProvider
+    PreferenceScope, PreferenceChange, OVERRIDE_PROPERTY_PATTERN, QuickInputService, StylingParticipant, WebSocketConnectionProvider,
+    UndoRedoHandler,
+    WidgetStatusBarContribution
 } from '@theia/core/lib/browser';
 import { TextEditorProvider, DiffNavigatorProvider, TextEditor } from '@theia/editor/lib/browser';
 import { MonacoEditorProvider, MonacoEditorFactory } from './monaco-editor-provider';
@@ -89,6 +75,7 @@ import { ThemeService } from '@theia/core/lib/browser/theming';
 import { ThemeServiceWithDB } from './monaco-indexed-db';
 import { IContextKeyService } from '@theia/monaco-editor-core/esm/vs/platform/contextkey/common/contextkey';
 import { IThemeService } from '@theia/monaco-editor-core/esm/vs/platform/theme/common/themeService';
+import { ActiveMonacoUndoRedoHandler, FocusedMonacoUndoRedoHandler } from './monaco-undo-redo-handler';
 
 export default new ContainerModule((bind, unbind, isBound, rebind) => {
     bind(MonacoThemingService).toSelf().inSingletonScope();
@@ -149,7 +136,7 @@ export default new ContainerModule((bind, unbind, isBound, rebind) => {
     bind(FrontendApplicationContribution).toService(MonacoFormattingConflictsContribution);
 
     bind(MonacoStatusBarContribution).toSelf().inSingletonScope();
-    bind(FrontendApplicationContribution).toService(MonacoStatusBarContribution);
+    bind(WidgetStatusBarContribution).toService(MonacoStatusBarContribution);
 
     bind(MonacoCommandRegistry).toSelf().inSingletonScope();
     bind(MonacoEditorCommandHandlers).toSelf().inSingletonScope();
@@ -191,6 +178,11 @@ export default new ContainerModule((bind, unbind, isBound, rebind) => {
 
     bind(MonacoIconRegistry).toSelf().inSingletonScope();
     bind(IconRegistry).toService(MonacoIconRegistry);
+
+    bind(FocusedMonacoUndoRedoHandler).toSelf().inSingletonScope();
+    bind(ActiveMonacoUndoRedoHandler).toSelf().inSingletonScope();
+    bind(UndoRedoHandler).toService(FocusedMonacoUndoRedoHandler);
+    bind(UndoRedoHandler).toService(ActiveMonacoUndoRedoHandler);
 });
 
 export const MonacoConfigurationService = Symbol('MonacoConfigurationService');

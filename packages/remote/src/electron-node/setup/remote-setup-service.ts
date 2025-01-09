@@ -14,12 +14,13 @@
 // SPDX-License-Identifier: EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0
 // *****************************************************************************
 
-import { inject, injectable } from '@theia/core/shared/inversify';
-import { RemoteConnection, RemoteExecResult, RemotePlatform, RemoteStatusReport } from '../remote-types';
+import { inject, injectable, named } from '@theia/core/shared/inversify';
+import { RemoteConnection, RemoteExecResult, RemoteStatusReport } from '../remote-types';
+import { RemoteCliContext, RemoteCliContribution, RemotePlatform } from '@theia/core/lib/node/remote/remote-cli-contribution';
 import { ApplicationPackage } from '@theia/core/shared/@theia/application-package';
 import { RemoteCopyService } from './remote-copy-service';
 import { RemoteNativeDependencyService } from './remote-native-dependency-service';
-import { OS, THEIA_VERSION } from '@theia/core';
+import { ContributionProvider, OS, THEIA_VERSION } from '@theia/core';
 import { RemoteNodeSetupService } from './remote-node-setup-service';
 import { RemoteSetupScriptService } from './remote-setup-script-service';
 
@@ -27,6 +28,11 @@ export interface RemoteSetupOptions {
     connection: RemoteConnection;
     report: RemoteStatusReport;
     nodeDownloadTemplate?: string;
+}
+
+export interface RemoteSetupResult {
+    applicationDirectory: string;
+    nodeDirectory: string;
 }
 
 @injectable()
@@ -47,7 +53,10 @@ export class RemoteSetupService {
     @inject(ApplicationPackage)
     protected readonly applicationPackage: ApplicationPackage;
 
-    async setup(options: RemoteSetupOptions): Promise<void> {
+    @inject(ContributionProvider) @named(RemoteCliContribution)
+    protected readonly cliContributions: ContributionProvider<RemoteCliContribution>;
+
+    async setup(options: RemoteSetupOptions): Promise<RemoteSetupResult> {
         const {
             connection,
             report,
@@ -86,22 +95,36 @@ export class RemoteSetupService {
         report('Starting application on remote...');
         const port = await this.startApplication(connection, platform, applicationDirectory, remoteNodeDirectory);
         connection.remotePort = port;
+        return {
+            applicationDirectory: libDir,
+            nodeDirectory: remoteNodeDirectory
+        };
     }
 
     protected async startApplication(connection: RemoteConnection, platform: RemotePlatform, remotePath: string, nodeDir: string): Promise<number> {
         const nodeExecutable = this.scriptService.joinPath(platform, nodeDir, ...(platform.os === OS.Type.Windows ? ['node.exe'] : ['bin', 'node']));
         const mainJsFile = this.scriptService.joinPath(platform, remotePath, 'lib', 'backend', 'main.js');
-        const localAddressRegex = /listening on http:\/\/127.0.0.1:(\d+)/;
+        const localAddressRegex = /listening on http:\/\/0.0.0.0:(\d+)/;
         let prefix = '';
         if (platform.os === OS.Type.Windows) {
             // We might to switch to PowerShell beforehand on Windows
             prefix = this.scriptService.exec(platform) + ' ';
         }
+        const remoteContext: RemoteCliContext = {
+            platform,
+            directory: remotePath
+        };
+        const args: string[] = ['--hostname=0.0.0.0', `--port=${connection.remotePort ?? 0}`, '--remote'];
+        for (const cli of this.cliContributions.getContributions()) {
+            if (cli.enhanceArgs) {
+                args.push(...await cli.enhanceArgs(remoteContext));
+            }
+        }
         // Change to the remote application path and start a node process with the copied main.js file
         // This way, our current working directory is set as expected
         const result = await connection.execPartial(`${prefix}cd "${remotePath}";${nodeExecutable}`,
             stdout => localAddressRegex.test(stdout),
-            [mainJsFile, '--hostname=127.0.0.1', '--port=0', '--remote']);
+            [mainJsFile, ...args]);
 
         const match = localAddressRegex.exec(result.stdout);
         if (!match) {
@@ -144,6 +167,8 @@ export class RemoteSetupService {
                 arch = 'x64';
             } else if (archResult.match(/i\d83/)) { // i386, i483, i683
                 arch = 'x86';
+            } else if (archResult.includes('aarch64')) {
+                arch = 'arm64';
             } else {
                 arch = archResult.trim();
             }

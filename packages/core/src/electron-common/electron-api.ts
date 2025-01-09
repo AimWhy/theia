@@ -50,12 +50,17 @@ export interface TheiaCoreAPI {
     setMenuBarVisible(visible: boolean, windowName?: string): void;
     setMenu(menu: MenuDto[] | undefined): void;
 
-    popup(menu: MenuDto[], x: number, y: number, onClosed: () => void): Promise<number>;
+    popup(menu: MenuDto[], x: number, y: number, onClosed: () => void, windowName?: string): Promise<number>;
     closePopup(handle: number): void;
 
-    focusWindow(name: string): void;
+    focusWindow(name?: string): void;
 
     showItemInFolder(fsPath: string): void;
+
+    /**
+     * @param location The location to open with the system app. This can be a file path or a URL.
+     */
+    openWithSystemApp(location: string): void;
 
     getTitleBarStyleAtStartup(): Promise<string>;
     setTitleBarStyle(style: string): void;
@@ -69,6 +74,8 @@ export interface TheiaCoreAPI {
     onAboutToClose(handler: () => void): Disposable;
     setCloseRequestHandler(handler: (reason: StopReason) => Promise<boolean>): void;
 
+    setOpenUrlHandler(handler: (url: string) => Promise<boolean>): void;
+
     setSecondaryWindowCloseRequestHandler(windowName: string, handler: () => Promise<boolean>): void;
 
     toggleDevTools(): void;
@@ -79,7 +86,7 @@ export interface TheiaCoreAPI {
     isFullScreen(): boolean; // TODO: this should really be async, since it blocks the renderer process
     toggleFullScreen(): void;
 
-    requestReload(): void;
+    requestReload(newUrl?: string): void;
     restart(): void;
 
     applicationStateChanged(state: FrontendApplicationState): void;
@@ -112,6 +119,7 @@ export const CHANNEL_FOCUS_WINDOW = 'FocusWindow';
 export const CHANNEL_SHOW_OPEN = 'ShowOpenDialog';
 export const CHANNEL_SHOW_SAVE = 'ShowSaveDialog';
 export const CHANNEL_SHOW_ITEM_IN_FOLDER = 'ShowItemInFolder';
+export const CHANNEL_OPEN_WITH_SYSTEM_APP = 'OpenWithSystemApp';
 export const CHANNEL_ATTACH_SECURITY_TOKEN = 'AttachSecurityToken';
 
 export const CHANNEL_GET_TITLE_STYLE_AT_STARTUP = 'GetTitleStyleAtStartup';
@@ -123,6 +131,7 @@ export const CHANNEL_MAXIMIZE = 'Maximize';
 export const CHANNEL_IS_MAXIMIZED = 'IsMaximized';
 
 export const CHANNEL_ABOUT_TO_CLOSE = 'AboutToClose';
+export const CHANNEL_OPEN_URL = 'OpenUrl';
 
 export const CHANNEL_UNMAXIMIZE = 'UnMaximize';
 export const CHANNEL_ON_WINDOW_EVENT = 'OnWindowEvent';

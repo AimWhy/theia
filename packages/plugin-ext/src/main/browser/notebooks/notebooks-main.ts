@@ -14,44 +14,57 @@
 // SPDX-License-Identifier: EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0
 // *****************************************************************************
 
-import { CancellationToken, DisposableCollection, Emitter, Event } from '@theia/core';
+import { CancellationToken, DisposableCollection, Emitter, URI } from '@theia/core';
 import { BinaryBuffer } from '@theia/core/lib/common/buffer';
-import { NotebookCellStatusBarItem, NotebookData, TransientOptions } from '@theia/notebook/lib/common';
-import { NotebookService } from '@theia/notebook/lib/browser';
+import { CellEditType, NotebookCellModelResource, NotebookData, NotebookModelResource, TransientOptions } from '@theia/notebook/lib/common';
+import { NotebookService, NotebookWorkspaceEdit } from '@theia/notebook/lib/browser';
 import { Disposable } from '@theia/plugin';
-import { MAIN_RPC_CONTEXT, NotebooksExt, NotebooksMain } from '../../../common';
+import { CommandRegistryMain, MAIN_RPC_CONTEXT, NotebooksExt, NotebooksMain, WorkspaceEditDto, WorkspaceNotebookCellEditDto } from '../../../common';
 import { RPCProtocol } from '../../../common/rpc-protocol';
 import { NotebookDto } from './notebook-dto';
-import { UriComponents } from '@theia/core/lib/common/uri';
 import { HostedPluginSupport } from '../../../hosted/browser/hosted-plugin';
-
-export interface NotebookCellStatusBarItemList {
-    items: NotebookCellStatusBarItem[];
-    dispose?(): void;
-}
-
-export interface NotebookCellStatusBarItemProvider {
-    viewType: string;
-    onDidChangeStatusBarItems?: Event<void>;
-    provideCellStatusBarItems(uri: UriComponents, index: number, token: CancellationToken): Promise<NotebookCellStatusBarItemList | undefined>;
-}
+import { NotebookModel } from '@theia/notebook/lib/browser/view-model/notebook-model';
+import { NotebookCellModel } from '@theia/notebook/lib/browser/view-model/notebook-cell-model';
+import { interfaces } from '@theia/core/shared/inversify';
+import {
+    NotebookCellStatusBarItemProvider,
+    NotebookCellStatusBarItemList,
+    NotebookCellStatusBarService
+} from '@theia/notebook/lib/browser/service/notebook-cell-status-bar-service';
 
 export class NotebooksMainImpl implements NotebooksMain {
 
-    private readonly disposables = new DisposableCollection();
+    protected readonly disposables = new DisposableCollection();
 
-    private readonly proxy: NotebooksExt;
-    private readonly notebookSerializer = new Map<number, Disposable>();
-    private readonly notebookCellStatusBarRegistrations = new Map<number, Disposable>();
+    protected notebookService: NotebookService;
+    protected cellStatusBarService: NotebookCellStatusBarService;
+
+    protected readonly proxy: NotebooksExt;
+    protected readonly notebookSerializer = new Map<number, Disposable>();
+    protected readonly notebookCellStatusBarRegistrations = new Map<number, Disposable>();
 
     constructor(
         rpc: RPCProtocol,
-        private notebookService: NotebookService,
-        plugins: HostedPluginSupport
+        container: interfaces.Container,
+        commands: CommandRegistryMain
     ) {
+        this.notebookService = container.get(NotebookService);
+        this.cellStatusBarService = container.get(NotebookCellStatusBarService);
+        const plugins = container.get(HostedPluginSupport);
+
         this.proxy = rpc.getProxy(MAIN_RPC_CONTEXT.NOTEBOOKS_EXT);
-        notebookService.onWillUseNotebookSerializer(async event => plugins.activateByNotebookSerializer(event));
-        notebookService.markReady();
+        this.notebookService.onWillUseNotebookSerializer(event => plugins.activateByNotebookSerializer(event));
+        this.notebookService.markReady();
+        commands.registerArgumentProcessor({
+            processArgument: arg => {
+                if (arg instanceof NotebookModel) {
+                    return NotebookModelResource.create(arg.uri);
+                } else if (arg instanceof NotebookCellModel) {
+                    return NotebookCellModelResource.create(arg.uri);
+                }
+                return arg;
+            }
+        });
     }
 
     dispose(): void {
@@ -93,8 +106,8 @@ export class NotebooksMainImpl implements NotebooksMain {
     async $registerNotebookCellStatusBarItemProvider(handle: number, eventHandle: number | undefined, viewType: string): Promise<void> {
         const that = this;
         const provider: NotebookCellStatusBarItemProvider = {
-            async provideCellStatusBarItems(uri: UriComponents, index: number, token: CancellationToken): Promise<NotebookCellStatusBarItemList | undefined> {
-                const result = await that.proxy.$provideNotebookCellStatusBarItems(handle, uri, index, token);
+            async provideCellStatusBarItems(notebookUri: URI, index: number, token: CancellationToken): Promise<NotebookCellStatusBarItemList | undefined> {
+                const result = await that.proxy.$provideNotebookCellStatusBarItems(handle, notebookUri.toComponents(), index, token);
                 return {
                     items: result?.items ?? [],
                     dispose(): void {
@@ -113,8 +126,8 @@ export class NotebooksMainImpl implements NotebooksMain {
             provider.onDidChangeStatusBarItems = emitter.event;
         }
 
-        // const disposable = this._cellStatusBarService.registerCellStatusBarItemProvider(provider);
-        // this.notebookCellStatusBarRegistrations.set(handle, disposable);
+        const disposable = this.cellStatusBarService.registerCellStatusBarItemProvider(provider);
+        this.notebookCellStatusBarRegistrations.set(handle, disposable);
     }
 
     async $unregisterNotebookCellStatusBarItemProvider(handle: number, eventHandle: number | undefined): Promise<void> {
@@ -133,3 +146,14 @@ export class NotebooksMainImpl implements NotebooksMain {
     }
 }
 
+export function toNotebookWorspaceEdit(dto: WorkspaceEditDto): NotebookWorkspaceEdit {
+    return {
+        edits: dto.edits.map((edit: WorkspaceNotebookCellEditDto) => ({
+            resource: URI.fromComponents(edit.resource),
+            edit: edit.cellEdit.editType === CellEditType.Replace ? {
+                ...edit.cellEdit,
+                cells: edit.cellEdit.cells.map(cell => NotebookDto.fromNotebookCellDataDto(cell))
+            } : edit.cellEdit
+        }))
+    };
+}

@@ -18,7 +18,7 @@ import * as theia from '@theia/plugin';
 import type * as monaco from '@theia/monaco-editor-core';
 import { MarkdownString as MarkdownStringDTO } from '@theia/core/lib/common/markdown-rendering';
 import { UriComponents } from './uri-components';
-import { CompletionItemTag, SnippetString } from '../plugin/types-impl';
+import { CompletionItemTag, DocumentPasteEditKind, SnippetString } from '../plugin/types-impl';
 import { Event as TheiaEvent } from '@theia/core/lib/common/event';
 import { URI } from '@theia/core/shared/vscode-uri';
 import { SerializedRegExp } from './plugin-api-rpc';
@@ -70,6 +70,17 @@ export interface Range {
      * Column on which the range ends in line `endLineNumber`.
      */
     readonly endColumn: number;
+}
+
+export interface Position {
+    /**
+     * line number (starts at 1)
+     */
+    readonly lineNumber: number,
+    /**
+     * column (starts at 1)
+     */
+    readonly column: number
 }
 
 export { MarkdownStringDTO as MarkdownString };
@@ -330,7 +341,7 @@ export interface DocumentDropEdit {
 }
 
 export interface DocumentDropEditProviderMetadata {
-    readonly id: string;
+    readonly providedDropEditKinds?: readonly DocumentPasteEditKind[];
     readonly dropMimeTypes: readonly string[];
 }
 
@@ -895,3 +906,13 @@ export interface InlineCompletionsProvider<T extends InlineCompletions = InlineC
     freeInlineCompletions(completions: T): void;
 }
 
+export interface DebugStackFrameDTO {
+    readonly sessionId: string,
+    readonly frameId: number,
+    readonly threadId: number
+}
+
+export interface DebugThreadDTO {
+    readonly sessionId: string,
+    readonly threadId: number
+}

@@ -24,7 +24,7 @@ import { Message } from '@phosphor/messaging';
 import { IDragEvent } from '@phosphor/dragdrop';
 import { RecursivePartial, Event as CommonEvent, DisposableCollection, Disposable, environment, isObject } from '../../common';
 import { animationFrame } from '../browser';
-import { Saveable, SaveableWidget, SaveOptions, SaveableSource } from '../saveable';
+import { Saveable, SaveableWidget, SaveOptions } from '../saveable';
 import { StatusBarImpl, StatusBarEntry, StatusBarAlignment } from '../status-bar/status-bar';
 import { TheiaDockPanel, BOTTOM_AREA_ID, MAIN_AREA_ID } from './theia-dock-panel';
 import { SidePanelHandler, SidePanel, SidePanelHandlerFactory } from './side-panel-handler';
@@ -38,12 +38,13 @@ import { waitForRevealed, waitForClosed, PINNED_CLASS } from '../widgets';
 import { CorePreferences } from '../core-preferences';
 import { BreadcrumbsRendererFactory } from '../breadcrumbs/breadcrumbs-renderer';
 import { Deferred } from '../../common/promise-util';
-import { SaveResourceService } from '../save-resource-service';
+import { SaveableService } from '../saveable-service';
 import { nls } from '../../common/nls';
 import { SecondaryWindowHandler } from '../secondary-window-handler';
 import URI from '../../common/uri';
 import { OpenerService } from '../opener-service';
 import { PreviewableWidget } from '../widgets/previewable-widget';
+import { WindowService } from '../window/window-service';
 
 /** The class name added to ApplicationShell instances. */
 const APPLICATION_SHELL_CLASS = 'theia-ApplicationShell';
@@ -271,8 +272,9 @@ export class ApplicationShell extends Widget {
         @inject(FrontendApplicationStateService) protected readonly applicationStateService: FrontendApplicationStateService,
         @inject(ApplicationShellOptions) @optional() options: RecursivePartial<ApplicationShell.Options> = {},
         @inject(CorePreferences) protected readonly corePreferences: CorePreferences,
-        @inject(SaveResourceService) protected readonly saveResourceService: SaveResourceService,
+        @inject(SaveableService) protected readonly saveableService: SaveableService,
         @inject(SecondaryWindowHandler) protected readonly secondaryWindowHandler: SecondaryWindowHandler,
+        @inject(WindowService) protected readonly windowService: WindowService
     ) {
         super(options as Widget.IOptions);
 
@@ -338,8 +340,8 @@ export class ApplicationShell extends Widget {
         this.rightPanelHandler.dockPanel.widgetRemoved.connect((_, widget) => this.fireDidRemoveWidget(widget));
 
         this.secondaryWindowHandler.init(this);
-        this.secondaryWindowHandler.onDidAddWidget(widget => this.fireDidAddWidget(widget));
-        this.secondaryWindowHandler.onDidRemoveWidget(widget => this.fireDidRemoveWidget(widget));
+        this.secondaryWindowHandler.onDidAddWidget(([widget, window]) => this.fireDidAddWidget(widget));
+        this.secondaryWindowHandler.onDidRemoveWidget(([widget, window]) => this.fireDidRemoveWidget(widget));
 
         this.layout = this.createLayout();
 
@@ -958,7 +960,7 @@ export class ApplicationShell extends Widget {
         }
     }
 
-    getInsertionOptions(options?: Readonly<ApplicationShell.WidgetOptions>): { area: string; addOptions: DockLayout.IAddOptions; } {
+    getInsertionOptions(options?: Readonly<ApplicationShell.WidgetOptions>): { area: string; addOptions: TheiaDockPanel.AddOptions; } {
         let ref: Widget | undefined = options?.ref;
         let area: ApplicationShell.Area = options?.area || 'main';
         if (!ref && (area === 'main' || area === 'bottom')) {
@@ -967,7 +969,7 @@ export class ApplicationShell extends Widget {
         }
         // make sure that ref belongs to area
         area = ref && this.getAreaFor(ref) || area;
-        const addOptions: DockPanel.IAddOptions = {};
+        const addOptions: TheiaDockPanel.AddOptions = {};
         if (ApplicationShell.isOpenToSideMode(options?.mode)) {
             const areaPanel = area === 'main' ? this.mainPanel : area === 'bottom' ? this.bottomPanel : undefined;
             const sideRef = areaPanel && ref && (options?.mode === 'open-to-left' ?
@@ -979,6 +981,10 @@ export class ApplicationShell extends Widget {
                 addOptions.ref = ref;
                 addOptions.mode = options?.mode === 'open-to-left' ? 'split-left' : 'split-right';
             }
+        } else if (ApplicationShell.isReplaceMode(options?.mode)) {
+            addOptions.ref = options?.ref;
+            addOptions.closeRef = true;
+            addOptions.mode = 'tab-after';
         } else {
             addOptions.ref = ref;
             addOptions.mode = options?.mode;
@@ -1229,13 +1235,6 @@ export class ApplicationShell extends Widget {
         }
         this.tracker.add(widget);
         this.checkActivation(widget);
-        Saveable.apply(
-            widget,
-            () => this.widgets.filter((maybeSaveable): maybeSaveable is Widget & SaveableSource => !!Saveable.get(maybeSaveable)),
-            async (toSave, options) => {
-                await this.saveResourceService.save(toSave, options);
-            },
-        );
         if (ApplicationShell.TrackableWidgetProvider.is(widget)) {
             for (const toTrack of widget.getTrackableWidgets()) {
                 this.track(toTrack);
@@ -1323,20 +1322,23 @@ export class ApplicationShell extends Widget {
         let widget = find(this.mainPanel.widgets(), w => w.id === id);
         if (widget) {
             this.mainPanel.activateWidget(widget);
-            return widget;
         }
-        widget = find(this.bottomPanel.widgets(), w => w.id === id);
-        if (widget) {
-            this.expandBottomPanel();
-            this.bottomPanel.activateWidget(widget);
-            return widget;
+        if (!widget) {
+            widget = find(this.bottomPanel.widgets(), w => w.id === id);
+            if (widget) {
+                this.expandBottomPanel();
+                this.bottomPanel.activateWidget(widget);
+            }
         }
-        widget = this.leftPanelHandler.activate(id);
-        if (widget) {
-            return widget;
+        if (!widget) {
+            widget = this.leftPanelHandler.activate(id);
         }
-        widget = this.rightPanelHandler.activate(id);
+
+        if (!widget) {
+            widget = this.rightPanelHandler.activate(id);
+        }
         if (widget) {
+            this.windowService.focus();
             return widget;
         }
         return this.secondaryWindowHandler.activateWidget(id);
@@ -1433,17 +1435,19 @@ export class ApplicationShell extends Widget {
             if (tabBar) {
                 tabBar.currentTitle = widget.title;
             }
-            return widget;
         }
-        widget = this.leftPanelHandler.expand(id);
+        if (!widget) {
+            widget = this.leftPanelHandler.expand(id);
+        }
+        if (!widget) {
+            widget = this.rightPanelHandler.expand(id);
+        }
         if (widget) {
+            this.windowService.focus();
             return widget;
+        } else {
+            return this.secondaryWindowHandler.revealWidget(id);
         }
-        widget = this.rightPanelHandler.expand(id);
-        if (widget) {
-            return widget;
-        }
-        return this.secondaryWindowHandler.revealWidget(id);
     }
 
     /**
@@ -1892,6 +1896,10 @@ export class ApplicationShell extends Widget {
         if (index < current.titles.length - 1) {
             return index + 1;
         }
+        // last item in tab bar. select the previous one.
+        if (index === current.titles.length - 1) {
+            return index - 1;
+        }
         return 0;
     }
 
@@ -2036,21 +2044,21 @@ export class ApplicationShell extends Widget {
      * Test whether the current widget is dirty.
      */
     canSave(): boolean {
-        return this.saveResourceService.canSave(this.currentWidget);
+        return this.saveableService.canSave(this.currentWidget);
     }
 
     /**
      * Save the current widget if it is dirty.
      */
     async save(options?: SaveOptions): Promise<void> {
-        await this.saveResourceService.save(this.currentWidget, options);
+        await this.saveableService.save(this.currentWidget, options);
     }
 
     /**
      * Test whether there is a dirty widget.
      */
     canSaveAll(): boolean {
-        return this.tracker.widgets.some(widget => this.saveResourceService.canSave(widget));
+        return this.tracker.widgets.some(widget => this.saveableService.canSave(widget));
     }
 
     /**
@@ -2058,8 +2066,8 @@ export class ApplicationShell extends Widget {
      */
     async saveAll(options?: SaveOptions): Promise<void> {
         for (const widget of this.widgets) {
-            if (this.saveResourceService.canSaveNotSaveAs(widget)) {
-                await this.saveResourceService.save(widget, options);
+            if (Saveable.isDirty(widget) && this.saveableService.canSaveNotSaveAs(widget)) {
+                await this.saveableService.save(widget, options);
             }
         }
     }
@@ -2173,6 +2181,15 @@ export namespace ApplicationShell {
     }
 
     /**
+     * Whether the `ref` of the options widget should be replaced.
+     */
+    export type ReplaceMode = 'tab-replace';
+
+    export function isReplaceMode(mode: unknown): mode is ReplaceMode {
+        return mode === 'tab-replace';
+    }
+
+    /**
      * Options for adding a widget to the application shell.
      */
     export interface WidgetOptions extends SidePanel.WidgetOptions {
@@ -2185,7 +2202,7 @@ export namespace ApplicationShell {
          *
          * The default is `'tab-after'`.
          */
-        mode?: DockLayout.InsertMode | OpenToSideMode
+        mode?: DockLayout.InsertMode | OpenToSideMode | ReplaceMode
         /**
          * The reference widget for the insert location.
          *

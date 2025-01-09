@@ -16,11 +16,12 @@
 
 import { Event, ViewColumn } from '@theia/core';
 import { BaseWidget } from '@theia/core/lib/browser';
+import { MarkdownString } from '@theia/core/lib/common/markdown-rendering/markdown-string';
+import { ThemeIcon } from '@theia/core/lib/common/theme';
 import { CommandLineOptions } from '@theia/process/lib/common/shell-command-builder';
 import { TerminalSearchWidget } from '../search/terminal-search-widget';
 import { TerminalProcessInfo, TerminalExitReason } from '../../common/base-terminal-protocol';
 import URI from '@theia/core/lib/common/uri';
-import { MarkdownString } from '@theia/core/lib/common/markdown-rendering/markdown-string';
 
 export interface TerminalDimensions {
     cols: number;
@@ -46,6 +47,15 @@ export interface TerminalEditorLocation {
 
 export interface TerminalSplitLocation {
     readonly parentTerminal: string;
+}
+
+export interface TerminalBuffer {
+    readonly length: number;
+    /**
+     * @param start zero based index of the first line to return
+     * @param length the max number or lines to return
+     */
+    getLines(start: number, length: number): string[];
 }
 
 /**
@@ -118,6 +128,10 @@ export abstract class TerminalWidget extends BaseWidget {
     /** Event that fires when the terminal input data */
     abstract onData: Event<string>;
 
+    abstract onOutput: Event<string>;
+
+    abstract buffer: TerminalBuffer;
+
     abstract scrollLineUp(): void;
 
     abstract scrollLineDown(): void;
@@ -178,9 +192,9 @@ export interface TerminalWidgetOptions {
     readonly title?: string;
 
     /**
-     * icon class
+     * icon class with or without color modifier
      */
-    readonly iconClass?: string;
+    readonly iconClass?: string | ThemeIcon;
 
     /**
      * Path to the executable shell. For example: `/bin/bash`, `bash`, `sh`.

@@ -172,12 +172,13 @@ export class PackageReExports {
         // To get around this, we can spawn a sub NodeJS process that will run the asynchronous
         // logic and then synchronously wait for the serialized result on the standard output.
         const scriptPath = require.resolve('./bin-package-re-exports-from-package.js');
-        const { stdout } = cp.spawnSync(process.argv0, [...process.execArgv, scriptPath, packageName], {
+        const { stdout } = cp.spawnSync(process.platform === 'win32' ? `"${process.argv[0]}"` : process.argv[0], [...process.execArgv, scriptPath, packageName], {
             env: {
                 ELECTRON_RUN_AS_NODE: '1'
             },
             encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'inherit']
+            stdio: ['ignore', 'pipe', 'inherit'],
+            shell: true
         });
         const [packageRoot, reExports] = JSON.parse(stdout) as [string, ReExport[]];
         return new PackageReExports(packageName, packageRoot, reExports);

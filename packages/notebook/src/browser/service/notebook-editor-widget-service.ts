@@ -23,6 +23,8 @@ import { Emitter } from '@theia/core';
 import { inject, injectable, postConstruct } from '@theia/core/shared/inversify';
 import { ApplicationShell } from '@theia/core/lib/browser';
 import { NotebookEditorWidget } from '../notebook-editor-widget';
+import { ContextKeyService } from '@theia/core/lib/browser/context-key-service';
+import { NOTEBOOK_EDITOR_FOCUSED } from '../contributions/notebook-context-keys';
 
 @injectable()
 export class NotebookEditorWidgetService {
@@ -30,30 +32,34 @@ export class NotebookEditorWidgetService {
     @inject(ApplicationShell)
     protected applicationShell: ApplicationShell;
 
-    private readonly notebookEditors = new Map<string, NotebookEditorWidget>();
+    @inject(ContextKeyService)
+    protected contextKeyService: ContextKeyService;
 
-    private readonly onNotebookEditorAddEmitter = new Emitter<NotebookEditorWidget>();
-    private readonly onNotebookEditorRemoveEmitter = new Emitter<NotebookEditorWidget>();
+    protected readonly notebookEditors = new Map<string, NotebookEditorWidget>();
+
+    protected readonly onNotebookEditorAddEmitter = new Emitter<NotebookEditorWidget>();
+    protected readonly onNotebookEditorRemoveEmitter = new Emitter<NotebookEditorWidget>();
     readonly onDidAddNotebookEditor = this.onNotebookEditorAddEmitter.event;
     readonly onDidRemoveNotebookEditor = this.onNotebookEditorRemoveEmitter.event;
 
-    private readonly onDidChangeFocusedEditorEmitter = new Emitter<NotebookEditorWidget | undefined>();
+    protected readonly onDidChangeFocusedEditorEmitter = new Emitter<NotebookEditorWidget | undefined>();
     readonly onDidChangeFocusedEditor = this.onDidChangeFocusedEditorEmitter.event;
 
+    protected readonly onDidChangeCurrentEditorEmitter = new Emitter<NotebookEditorWidget | undefined>();
+    readonly onDidChangeCurrentEditor = this.onDidChangeCurrentEditorEmitter.event;
+
     focusedEditor?: NotebookEditorWidget = undefined;
+
+    currentEditor?: NotebookEditorWidget = undefined;
 
     @postConstruct()
     protected init(): void {
         this.applicationShell.onDidChangeActiveWidget(event => {
-            if (event.newValue instanceof NotebookEditorWidget) {
-                if (event.newValue !== this.focusedEditor) {
-                    this.focusedEditor = event.newValue;
-                    this.onDidChangeFocusedEditorEmitter.fire(this.focusedEditor);
-                }
-            } else if (event.newValue) {
-                // Only unfocus editor if a new widget has been focused
-                this.focusedEditor = undefined;
-                this.onDidChangeFocusedEditorEmitter.fire(undefined);
+            this.notebookEditorFocusChanged(event.newValue as NotebookEditorWidget, event.newValue instanceof NotebookEditorWidget);
+        });
+        this.applicationShell.onDidChangeCurrentWidget(event => {
+            if (event.newValue instanceof NotebookEditorWidget || event.oldValue instanceof NotebookEditorWidget) {
+                this.currentNotebookEditorChanged(event.newValue);
             }
         });
     }
@@ -66,6 +72,9 @@ export class NotebookEditorWidgetService {
         }
         this.notebookEditors.set(editor.id, editor);
         this.onNotebookEditorAddEmitter.fire(editor);
+        if (editor.isVisible) {
+            this.notebookEditorFocusChanged(editor, true);
+        }
     }
 
     removeNotebookEditor(editor: NotebookEditorWidget): void {
@@ -83,6 +92,30 @@ export class NotebookEditorWidgetService {
 
     getNotebookEditors(): readonly NotebookEditorWidget[] {
         return Array.from(this.notebookEditors.values());
+    }
+
+    notebookEditorFocusChanged(editor: NotebookEditorWidget, focus: boolean): void {
+        if (focus) {
+            if (editor !== this.focusedEditor) {
+                this.focusedEditor = editor;
+                this.contextKeyService.setContext(NOTEBOOK_EDITOR_FOCUSED, true);
+                this.onDidChangeFocusedEditorEmitter.fire(this.focusedEditor);
+            }
+        } else if (this.focusedEditor) {
+            this.focusedEditor = undefined;
+            this.contextKeyService.setContext(NOTEBOOK_EDITOR_FOCUSED, false);
+            this.onDidChangeFocusedEditorEmitter.fire(undefined);
+        }
+    }
+
+    currentNotebookEditorChanged(newEditor: unknown): void {
+        if (newEditor instanceof NotebookEditorWidget) {
+            this.currentEditor = newEditor;
+            this.onDidChangeCurrentEditorEmitter.fire(newEditor);
+        } else if (this.currentEditor?.isDisposed || !this.currentEditor?.isVisible) {
+            this.currentEditor = undefined;
+            this.onDidChangeCurrentEditorEmitter.fire(undefined);
+        }
     }
 
 }

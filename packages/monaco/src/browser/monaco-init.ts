@@ -27,6 +27,23 @@
  * is allowed.
  */
 
+// Before importing anything from monaco we need to override its localization function
+import * as MonacoNls from '@theia/monaco-editor-core/esm/vs/nls';
+import { nls } from '@theia/core/lib/common/nls';
+import { FormatType, Localization } from '@theia/core/lib/common/i18n/localization';
+
+Object.assign(MonacoNls, {
+    localize(_key: string, label: string, ...args: FormatType[]): string {
+        if (nls.locale) {
+            const defaultKey = nls.getDefaultKey(label);
+            if (defaultKey) {
+                return nls.localize(defaultKey, label, ...args);
+            }
+        }
+        return Localization.format(label, args);
+    }
+});
+
 import { Container } from '@theia/core/shared/inversify';
 import { ICodeEditorService } from '@theia/monaco-editor-core/esm/vs/editor/browser/services/codeEditorService';
 import { StandaloneServices } from '@theia/monaco-editor-core/esm/vs/editor/standalone/browser/standaloneServices';
@@ -46,6 +63,8 @@ import { IBulkEditService } from '@theia/monaco-editor-core/esm/vs/editor/browse
 import { ICommandService } from '@theia/monaco-editor-core/esm/vs/platform/commands/common/commands';
 import { MonacoQuickInputImplementation } from './monaco-quick-input-service';
 import { IQuickInputService } from '@theia/monaco-editor-core/esm/vs/platform/quickinput/common/quickInput';
+import { IStandaloneThemeService } from '@theia/monaco-editor-core/esm/vs/editor/standalone/common/standaloneTheme';
+import { MonacoStandaloneThemeService } from './monaco-standalone-theme-service';
 
 class MonacoEditorServiceConstructor {
     /**
@@ -109,6 +128,7 @@ export namespace MonacoInit {
             [IBulkEditService.toString()]: new SyncDescriptor(MonacoBulkEditServiceConstructor, [container]),
             [ICommandService.toString()]: new SyncDescriptor(MonacoCommandServiceConstructor, [container]),
             [IQuickInputService.toString()]: new SyncDescriptor(MonacoQuickInputImplementationConstructor, [container]),
+            [IStandaloneThemeService.toString()]: new MonacoStandaloneThemeService()
         });
     }
 }

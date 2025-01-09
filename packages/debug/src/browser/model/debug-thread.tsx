@@ -15,11 +15,13 @@
 // *****************************************************************************
 
 import * as React from '@theia/core/shared/react';
-import { CancellationTokenSource, Emitter, Event, nls } from '@theia/core';
+import { CancellationTokenSource, Emitter, Event, MessageType, nls } from '@theia/core';
 import { DebugProtocol } from '@vscode/debugprotocol/lib/debugProtocol';
 import { TreeElement } from '@theia/core/lib/browser/source-tree';
 import { DebugStackFrame } from './debug-stack-frame';
 import { DebugSession } from '../debug-session';
+import * as monaco from '@theia/monaco-editor-core';
+import URI from '@theia/core/lib/common/uri';
 
 export type StoppedDetails = DebugProtocol.StoppedEvent['body'] & {
     framesErrorMessage?: string
@@ -56,11 +58,18 @@ export class DebugThread extends DebugThreadData implements TreeElement {
         return this.session.id + ':' + this.raw.id;
     }
 
+    get threadId(): number {
+        return this.raw.id;
+    }
+
     protected _currentFrame: DebugStackFrame | undefined;
     get currentFrame(): DebugStackFrame | undefined {
         return this._currentFrame;
     }
     set currentFrame(frame: DebugStackFrame | undefined) {
+        if (this._currentFrame?.id === frame?.id) {
+            return;
+        }
         this._currentFrame = frame;
         this.onDidChangedEmitter.fire(undefined);
         this.onDidFocusStackFrameEmitter.fire(frame);
@@ -102,6 +111,28 @@ export class DebugThread extends DebugThreadData implements TreeElement {
 
     pause(): Promise<DebugProtocol.PauseResponse> {
         return this.session.sendRequest('pause', this.toArgs());
+    }
+
+    get supportsGoto(): boolean {
+        return !!this.session.capabilities.supportsGotoTargetsRequest;
+    }
+
+    async jumpToCursor(uri: URI, position: monaco.Position): Promise<DebugProtocol.GotoResponse | undefined> {
+        const source = await this.session?.toDebugSource(uri);
+
+        if (!source) {
+            return undefined;
+        }
+
+        const response: DebugProtocol.GotoTargetsResponse = await this.session.sendRequest('gotoTargets', { source, line: position.lineNumber, column: position.column });
+
+        if (response && response.body.targets.length === 0) {
+            this.session.showMessage(MessageType.Warning, 'No executable code is associated at the current cursor position.');
+            return;
+        }
+
+        const targetId = response.body.targets[0].id;
+        return this.session.sendRequest('goto', this.toArgs({ targetId }));
     }
 
     async getExceptionInfo(): Promise<DebugExceptionInfo | undefined> {
@@ -254,8 +285,8 @@ export class DebugThread extends DebugThreadData implements TreeElement {
         const localizedReason = this.getLocalizedReason(reason);
 
         return reason
-                ? nls.localizeByDefault('Paused on {0}', localizedReason)
-                : nls.localizeByDefault('Paused');
+            ? nls.localizeByDefault('Paused on {0}', localizedReason)
+            : nls.localizeByDefault('Paused');
     }
 
     protected getLocalizedReason(reason: string | undefined): string {
@@ -274,7 +305,7 @@ export class DebugThread extends DebugThreadData implements TreeElement {
                 return nls.localize('theia/debug/goto', 'goto');
             case 'function breakpoint':
                 return nls.localize('theia/debug/functionBreakpoint', 'function breakpoint');
-             case 'data breakpoint':
+            case 'data breakpoint':
                 return nls.localize('theia/debug/dataBreakpoint', 'data breakpoint');
             case 'instruction breakpoint':
                 return nls.localize('theia/debug/instructionBreakpoint', 'instruction breakpoint');
