@@ -14,24 +14,30 @@
 // SPDX-License-Identifier: EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0
 // *****************************************************************************
 
-import { DisposableCollection } from '@theia/core';
+import { DisposableCollection, Event } from '@theia/core';
 import { URI, UriComponents } from '@theia/core/lib/common/uri';
 import { interfaces } from '@theia/core/shared/inversify';
 import { NotebookModelResolverService } from '@theia/notebook/lib/browser';
 import { NotebookModel } from '@theia/notebook/lib/browser/view-model/notebook-model';
 import { NotebookCellsChangeType } from '@theia/notebook/lib/common';
-import { MAIN_RPC_CONTEXT, NotebookCellsChangedEventDto, NotebookDataDto, NotebookDocumentsExt, NotebookDocumentsMain } from '../../../common';
+import { NotebookMonacoTextModelService } from '@theia/notebook/lib/browser/service/notebook-monaco-text-model-service';
+import { MAIN_RPC_CONTEXT, NotebookCellsChangedEventDto, NotebookDataDto, NotebookDocumentsExt, NotebookDocumentsMain, NotebookRawContentEventDto } from '../../../common';
 import { RPCProtocol } from '../../../common/rpc-protocol';
 import { NotebookDto } from './notebook-dto';
+import { MonacoEditorModel } from '@theia/monaco/lib/browser/monaco-editor-model';
+import { NotebookOpenHandler } from '@theia/notebook/lib/browser/notebook-open-handler';
 
 export class NotebookDocumentsMainImpl implements NotebookDocumentsMain {
 
-    private readonly disposables = new DisposableCollection();
+    protected readonly disposables = new DisposableCollection();
 
-    private readonly proxy: NotebookDocumentsExt;
-    private readonly documentEventListenersMapping = new Map<string, DisposableCollection>();
+    protected readonly proxy: NotebookDocumentsExt;
+    protected readonly documentEventListenersMapping = new Map<string, DisposableCollection>();
 
-    private readonly notebookModelResolverService: NotebookModelResolverService;
+    protected readonly notebookModelResolverService: NotebookModelResolverService;
+
+    protected readonly notebookMonacoTextModelService: NotebookMonacoTextModelService;
+    protected readonly notebookOpenHandler: NotebookOpenHandler;
 
     constructor(
         rpc: RPCProtocol,
@@ -39,11 +45,17 @@ export class NotebookDocumentsMainImpl implements NotebookDocumentsMain {
     ) {
         this.proxy = rpc.getProxy(MAIN_RPC_CONTEXT.NOTEBOOK_DOCUMENTS_EXT);
         this.notebookModelResolverService = container.get(NotebookModelResolverService);
+        this.notebookOpenHandler = container.get(NotebookOpenHandler);
 
         // forward dirty and save events
         this.disposables.push(this.notebookModelResolverService.onDidChangeDirty(model => this.proxy.$acceptDirtyStateChanged(model.uri.toComponents(), model.isDirty())));
         this.disposables.push(this.notebookModelResolverService.onDidSaveNotebook(e => this.proxy.$acceptModelSaved(e)));
 
+        this.notebookMonacoTextModelService = container.get(NotebookMonacoTextModelService) as NotebookMonacoTextModelService;
+    }
+
+    get onDidAddNotebookCellModel(): Event<MonacoEditorModel> {
+        return this.notebookMonacoTextModelService.onDidCreateNotebookCellModel;
     }
 
     dispose(): void {
@@ -102,6 +114,12 @@ export class NotebookDocumentsMainImpl implements NotebookDocumentsMain {
                         case NotebookCellsChangeType.ChangeCellInternalMetadata:
                             eventDto.rawEvents.push(e);
                             break;
+                        case NotebookCellsChangeType.ChangeDocumentMetadata:
+                            eventDto.rawEvents.push({
+                                kind: e.kind,
+                                metadata: e.metadata
+                            });
+                            break;
                     }
                 }
 
@@ -138,27 +156,46 @@ export class NotebookDocumentsMainImpl implements NotebookDocumentsMain {
         //     ref.dispose();
         // });
 
+        const uriComponents = ref.uri.toComponents();
         // untitled notebooks are dirty by default
-        this.proxy.$acceptDirtyStateChanged(ref.uri.toComponents(), true);
+        this.proxy.$acceptDirtyStateChanged(uriComponents, true);
 
-        // apply content changes... slightly HACKY -> this triggers a change event
-        // if (options.content) {
-        //     const data = NotebookDto.fromNotebookDataDto(options.content);
-        //     ref.notebook.reset(data.cells, data.metadata, ref.object.notebook.transientOptions);
-        // }
-        return ref.uri.toComponents();
+        // apply content changes...
+        if (options.content) {
+            const data = NotebookDto.fromNotebookDataDto(options.content);
+            ref.setData(data);
+
+            // Create and send a change events
+            const rawEvents: NotebookRawContentEventDto[] = [];
+            if (options.content.cells && options.content.cells.length > 0) {
+                rawEvents.push({
+                    kind: NotebookCellsChangeType.ModelChange,
+                    changes: [{ start: 0, startHandle: 0, deleteCount: 0, newItems: ref.cells.map(NotebookDto.toNotebookCellDto) }]
+                });
+            }
+            if (options.content.metadata) {
+                rawEvents.push({
+                    kind: NotebookCellsChangeType.ChangeDocumentMetadata,
+                    metadata: options.content.metadata
+                });
+            }
+            if (rawEvents.length > 0) {
+                this.proxy.$acceptModelChanged(uriComponents, { versionId: 1, rawEvents }, true);
+            }
+        }
+        return uriComponents;
     }
 
     async $tryOpenNotebook(uriComponents: UriComponents): Promise<UriComponents> {
         const uri = URI.fromComponents(uriComponents);
+        await this.notebookModelResolverService.resolve(uri);
         return uri.toComponents();
     }
 
     async $trySaveNotebook(uriComponents: UriComponents): Promise<boolean> {
         const uri = URI.fromComponents(uriComponents);
-
         const ref = await this.notebookModelResolverService.resolve(uri);
-        await ref.save({});
+        await ref.save();
         ref.dispose();
         return true;
     }

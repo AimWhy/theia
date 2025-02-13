@@ -16,8 +16,11 @@
 
 import { injectable, postConstruct, inject } from '@theia/core/shared/inversify';
 import URI from '@theia/core/lib/common/uri';
-import { RecursivePartial, Emitter, Event, MaybePromise, CommandService } from '@theia/core/lib/common';
-import { WidgetOpenerOptions, NavigatableWidgetOpenHandler, NavigatableWidgetOptions, Widget, PreferenceService, CommonCommands } from '@theia/core/lib/browser';
+import { RecursivePartial, Emitter, Event, MaybePromise, CommandService, nls } from '@theia/core/lib/common';
+import {
+    WidgetOpenerOptions, NavigatableWidgetOpenHandler, NavigatableWidgetOptions, Widget, PreferenceService, CommonCommands, getDefaultHandler,
+    defaultHandlerPriority
+} from '@theia/core/lib/browser';
 import { EditorWidget } from './editor-widget';
 import { Range, Position, Location, TextEditor } from './editor';
 import { EditorWidgetFactory } from './editor-widget-factory';
@@ -38,7 +41,7 @@ export class EditorManager extends NavigatableWidgetOpenHandler<EditorWidget> {
 
     readonly id = EditorWidgetFactory.ID;
 
-    readonly label = 'Code Editor';
+    readonly label = nls.localizeByDefault('Text Editor');
 
     protected readonly editorCounters = new Map<string, number>();
 
@@ -84,6 +87,7 @@ export class EditorManager extends NavigatableWidgetOpenHandler<EditorWidget> {
                 this.addRecentlyVisible(widget);
             }
         }
+
         this.updateCurrentEditor();
     }
 
@@ -102,7 +106,7 @@ export class EditorManager extends NavigatableWidgetOpenHandler<EditorWidget> {
             if (!(editorPromise instanceof Widget)) {
                 editorPromise.then(editor => this.revealSelection(editor, options, uri));
             } else {
-                this.revealSelection(editorPromise, options);
+                this.revealSelection(editorPromise, options, uri);
             }
         }
         return editorPromise;
@@ -173,10 +177,8 @@ export class EditorManager extends NavigatableWidgetOpenHandler<EditorWidget> {
         return this._currentEditor;
     }
     protected setCurrentEditor(current: EditorWidget | undefined): void {
-        if (this._currentEditor !== current) {
-            this._currentEditor = current;
-            this.onCurrentEditorChangedEmitter.fire(this._currentEditor);
-        }
+        this._currentEditor = current;
+        this.onCurrentEditorChangedEmitter.fire(this._currentEditor);
     }
     protected updateCurrentEditor(): void {
         const widget = this.shell.currentWidget;
@@ -188,6 +190,9 @@ export class EditorManager extends NavigatableWidgetOpenHandler<EditorWidget> {
     }
 
     canHandle(uri: URI, options?: WidgetOpenerOptions): number {
+        if (getDefaultHandler(uri, this.preferenceService) === 'default') {
+            return defaultHandlerPriority;
+        }
         return 100;
     }
 
@@ -258,7 +263,10 @@ export class EditorManager extends NavigatableWidgetOpenHandler<EditorWidget> {
                 editor.revealPosition(selection);
             } else if (Range.is(selection)) {
                 editor.cursor = selection.end;
-                editor.selection = selection;
+                editor.selection = {
+                    ...selection,
+                    direction: 'ltr'
+                };
                 editor.revealRange(selection);
             }
         }

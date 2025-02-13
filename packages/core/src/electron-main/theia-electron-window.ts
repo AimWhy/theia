@@ -37,6 +37,12 @@ export interface TheiaBrowserWindowOptions extends BrowserWindowConstructorOptio
      * in which case we want to invalidate the stored options and use the default options instead.
      */
     screenLayout?: string;
+    /**
+     * By default, the window will be shown as soon as the content is ready to render.
+     * This can be prevented by handing over preventAutomaticShow: `true`.
+     * Use this for fine-grained control over when to show the window, e.g. to coordinate with a splash screen.
+     */
+    preventAutomaticShow?: boolean;
 }
 
 export const TheiaBrowserWindowOptions = Symbol('TheiaBrowserWindowOptions');
@@ -52,6 +58,7 @@ enum ClosingState {
 
 @injectable()
 export class TheiaElectronWindow {
+
     @inject(TheiaBrowserWindowOptions) protected readonly options: TheiaBrowserWindowOptions;
     @inject(WindowApplicationConfig) protected readonly config: WindowApplicationConfig;
     @inject(ElectronMainApplicationGlobals) protected readonly globals: ElectronMainApplicationGlobals;
@@ -76,7 +83,9 @@ export class TheiaElectronWindow {
     protected init(): void {
         this._window = new BrowserWindow(this.options);
         this._window.setMenuBarVisibility(false);
-        this.attachReadyToShow();
+        if (!this.options.preventAutomaticShow) {
+            this.attachReadyToShow();
+        }
         this.restoreMaximizedState();
         this.attachCloseListeners();
         this.trackApplicationState();
@@ -139,10 +148,14 @@ export class TheiaElectronWindow {
         return this.handleStopRequest(() => this.doCloseWindow(), reason);
     }
 
-    protected reload(): void {
+    protected reload(newUrl?: string): void {
         this.handleStopRequest(async () => {
             this.applicationState = 'init';
-            this._window.reload();
+            if (newUrl) {
+                this._window.loadURL(newUrl);
+            } else {
+                this._window.reload();
+            }
         }, StopReason.Reload);
     }
 
@@ -173,10 +186,18 @@ export class TheiaElectronWindow {
     }
 
     protected restoreMaximizedState(): void {
-        if (this.options.isMaximized) {
-            this._window.maximize();
+        const restore = () => {
+            if (this.options.isMaximized) {
+                this._window.maximize();
+            } else {
+                this._window.unmaximize();
+            }
+        };
+
+        if (this._window.isVisible()) {
+            restore();
         } else {
-            this._window.unmaximize();
+            this._window.once('show', () => restore());
         }
     }
 
@@ -187,7 +208,11 @@ export class TheiaElectronWindow {
     }
 
     protected attachReloadListener(): void {
-        this.toDispose.push(TheiaRendererAPI.onRequestReload(this.window.webContents, () => this.reload()));
+        this.toDispose.push(TheiaRendererAPI.onRequestReload(this.window.webContents, (newUrl?: string) => this.reload(newUrl)));
+    }
+
+    openUrl(url: string): Promise<boolean> {
+        return TheiaRendererAPI.openUrl(this.window.webContents, url);
     }
 
     dispose(): void {

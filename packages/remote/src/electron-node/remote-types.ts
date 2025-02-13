@@ -14,13 +14,8 @@
 // SPDX-License-Identifier: EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0
 // *****************************************************************************
 
-import { Disposable, Event, OS } from '@theia/core';
+import { Disposable, Event } from '@theia/core';
 import * as net from 'net';
-
-export interface RemotePlatform {
-    os: OS.Type
-    arch: string
-}
 
 export type RemoteStatusReport = (message: string) => void;
 
@@ -49,8 +44,26 @@ export interface RemoteConnection extends Disposable {
     localPort: number;
     remotePort: number;
     onDidDisconnect: Event<void>;
-    forwardOut(socket: net.Socket): void;
+    forwardOut(socket: net.Socket, port?: number): void;
+
+    /**
+     * execute a single command on the remote machine
+     */
     exec(cmd: string, args?: string[], options?: RemoteExecOptions): Promise<RemoteExecResult>;
+
+    /**
+     * execute a command on the remote machine and wait for a specific output
+     * @param tester function which returns true if the output is as expected
+     */
     execPartial(cmd: string, tester: RemoteExecTester, args?: string[], options?: RemoteExecOptions): Promise<RemoteExecResult>;
+
+    /**
+     * copy files from local to remote
+     */
     copy(localPath: string | Buffer | NodeJS.ReadableStream, remotePath: string): Promise<void>;
+
+    /**
+     * used for disposing when theia is shutting down
+     */
+    disposeSync?(): void;
 }

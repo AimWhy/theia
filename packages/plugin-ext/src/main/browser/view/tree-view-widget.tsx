@@ -45,7 +45,6 @@ import { View } from '../../../common/plugin-protocol';
 import { URI } from '@theia/core/lib/common/uri';
 import { ContextKeyService } from '@theia/core/lib/browser/context-key-service';
 import { MarkdownString } from '@theia/core/lib/common/markdown-rendering';
-import { LabelParser } from '@theia/core/lib/browser/label-parser';
 import { AccessibilityInformation } from '@theia/plugin';
 import { ColorRegistry } from '@theia/core/lib/browser/color-registry';
 import { DecoratedTreeNode } from '@theia/core/lib/browser/tree/tree-decorator';
@@ -429,6 +428,18 @@ export class PluginTreeModel extends TreeModelImpl {
 
 @injectable()
 export class TreeViewWidget extends TreeViewWelcomeWidget {
+    async refresh(items?: string[]): Promise<void> {
+        if (items) {
+            for (const id of items) {
+                const node = this.model.getNode(id);
+                if (CompositeTreeNode.is(node)) {
+                    await this.model.refresh(node);
+                }
+            };
+        } else {
+            this.model.refresh();
+        }
+    }
 
     protected _contextSelection = false;
 
@@ -455,9 +466,6 @@ export class TreeViewWidget extends TreeViewWelcomeWidget {
 
     @inject(HoverService)
     protected readonly hoverService: HoverService;
-
-    @inject(LabelParser)
-    protected readonly labelParser: LabelParser;
 
     @inject(ColorRegistry)
     protected readonly colorRegistry: ColorRegistry;

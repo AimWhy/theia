@@ -61,8 +61,8 @@ test.describe('Theia Quick Command', () => {
     });
 
     test('should trigger \'Toggle Explorer View\' command after typing', async () => {
-        await quickCommand.type('Toggle Explorer');
-        await quickCommand.trigger('Toggle Explorer View');
+        await quickCommand.type('Toggle Exp');
+        await quickCommand.trigger('View: Toggle Explorer');
         expect(await quickCommand.isOpen()).toBe(false);
         const explorerView = new TheiaExplorerView(app);
         expect(await explorerView.isDisplayed()).toBe(true);
@@ -75,6 +75,12 @@ test.describe('Theia Quick Command', () => {
         const notificationIndicator = new TheiaNotificationIndicator(app);
         const notification = new TheiaNotificationOverlay(app, notificationIndicator);
         expect(await notification.isEntryVisible('Positive Integer: 6')).toBe(true);
+    });
+
+    test('retrieve and check visible items', async () => {
+        await quickCommand.type('close all tabs', false);
+        const listItems = await Promise.all((await quickCommand.visibleItems()).map(async item => item.textContent()));
+        expect(listItems).toContain('View: Close All Tabs in Main Area');
     });
 
 });

@@ -15,23 +15,26 @@
 // *****************************************************************************
 
 import { inject, injectable, named } from 'inversify';
-import { screen, app, BrowserWindow, WebContents, Event as ElectronEvent, BrowserWindowConstructorOptions, nativeImage, nativeTheme } from '../../electron-shared/electron';
+import {
+    screen, app, BrowserWindow, WebContents, Event as ElectronEvent, BrowserWindowConstructorOptions, nativeImage,
+    nativeTheme, shell, dialog
+} from '../../electron-shared/electron';
 import * as path from 'path';
 import { Argv } from 'yargs';
 import { AddressInfo } from 'net';
 import { promises as fs } from 'fs';
 import { existsSync, mkdirSync } from 'fs-extra';
 import { fork, ForkOptions } from 'child_process';
-import { DefaultTheme, FrontendApplicationConfig } from '@theia/application-package/lib/application-props';
+import { DefaultTheme, ElectronFrontendApplicationConfig, FrontendApplicationConfig } from '@theia/application-package/lib/application-props';
 import URI from '../common/uri';
 import { FileUri } from '../common/file-uri';
-import { Deferred } from '../common/promise-util';
+import { Deferred, timeout } from '../common/promise-util';
 import { MaybePromise } from '../common/types';
 import { ContributionProvider } from '../common/contribution-provider';
 import { ElectronSecurityTokenService } from './electron-security-token-service';
 import { ElectronSecurityToken } from '../electron-common/electron-token';
 import Storage = require('electron-store');
-import { Disposable, DisposableCollection, isOSX, isWindows } from '../common';
+import { CancellationTokenSource, Disposable, DisposableCollection, Path, isOSX, isWindows } from '../common';
 import { DEFAULT_WINDOW_HASH, WindowSearchParams } from '../common/window';
 import { TheiaBrowserWindowOptions, TheiaElectronWindow, TheiaElectronWindowFactory } from './theia-electron-window';
 import { ElectronMainApplicationGlobals } from './electron-main-constants';
@@ -114,13 +117,13 @@ export class ElectronMainProcessArgv {
         return 1;
     }
 
-    protected get isBundledElectronApp(): boolean {
+    get isBundledElectronApp(): boolean {
         // process.defaultApp is either set by electron in an electron unbundled app, or undefined
         // see https://github.com/electron/electron/blob/master/docs/api/process.md#processdefaultapp-readonly
         return this.isElectronApp && !(process as ElectronMainProcessArgv.ElectronMainProcess).defaultApp;
     }
 
-    protected get isElectronApp(): boolean {
+    get isElectronApp(): boolean {
         // process.versions.electron is either set by electron, or undefined
         // see https://github.com/electron/electron/blob/master/docs/api/process.md#processversionselectron-readonly
         return !!(process as ElectronMainProcessArgv.ElectronMainProcess).versions.electron;
@@ -180,8 +183,10 @@ export class ElectronMainApplication {
     protected customBackgroundColor?: string;
     protected didUseNativeWindowFrameOnStart = new Map<number, boolean>();
     protected windows = new Map<number, TheiaElectronWindow>();
+    protected activeWindowStack: number[] = [];
     protected restarting = false;
 
+    /** Used to temporarily store the reference to an early created main window */
     protected initialWindow?: BrowserWindow;
 
     get config(): FrontendApplicationConfig {
@@ -208,6 +213,7 @@ export class ElectronMainApplication {
     async start(config: FrontendApplicationConfig): Promise<void> {
         const argv = this.processArgv.getProcessArgvWithoutBin(process.argv);
         createYargs(argv, process.cwd())
+            .help(false)
             .command('$0 [file]', false,
                 cmd => cmd
                     .option('electronUserData', {
@@ -224,7 +230,7 @@ export class ElectronMainApplication {
                     this.useNativeWindowFrame = this.getTitleBarStyle(config) === 'native';
                     this._config = config;
                     this.hookApplicationEvents();
-                    this.showInitialWindow();
+                    this.showInitialWindow(argv.includes('--open-url') ? argv[argv.length - 1] : undefined);
                     const port = await this.startBackend();
                     this._backendPort.resolve(port);
                     await app.whenReady();
@@ -266,6 +272,7 @@ export class ElectronMainApplication {
     }
 
     setBackgroundColor(webContents: WebContents, backgroundColor: string): void {
+        BrowserWindow.fromWebContents(webContents)?.setBackgroundColor(backgroundColor);
         this.customBackgroundColor = backgroundColor;
         this.saveState(webContents);
     }
@@ -287,16 +294,116 @@ export class ElectronMainApplication {
         return this.didUseNativeWindowFrameOnStart.get(webContents.id) ? 'native' : 'custom';
     }
 
-    protected showInitialWindow(): void {
-        if (this.config.electron.showWindowEarly &&
-            !('THEIA_ELECTRON_NO_EARLY_WINDOW' in process.env && process.env.THEIA_ELECTRON_NO_EARLY_WINDOW === '1')) {
-            console.log('Showing main window early');
+    protected async determineSplashScreenBounds(initialWindowBounds: { x: number, y: number, width: number, height: number }):
+        Promise<{ x: number, y: number, width: number, height: number }> {
+        const splashScreenOptions = this.getSplashScreenOptions();
+        const width = splashScreenOptions?.width ?? 640;
+        const height = splashScreenOptions?.height ?? 480;
+
+        // determine the screen on which to show the splash screen via the center of the window to show
+        const windowCenterPoint = { x: initialWindowBounds.x + (initialWindowBounds.width / 2), y: initialWindowBounds.y + (initialWindowBounds.height / 2) };
+        const { bounds } = screen.getDisplayNearestPoint(windowCenterPoint);
+
+        // place splash screen center of screen
+        const screenCenterPoint = { x: bounds.x + (bounds.width / 2), y: bounds.y + (bounds.height / 2) };
+        const x = screenCenterPoint.x - (width / 2);
+        const y = screenCenterPoint.y - (height / 2);
+
+        return {
+            x, y, width, height
+        };
+    }
+
+    protected isShowWindowEarly(): boolean {
+        return !!this.config.electron.showWindowEarly &&
+            !('THEIA_ELECTRON_NO_EARLY_WINDOW' in process.env && process.env.THEIA_ELECTRON_NO_EARLY_WINDOW === '1');
+    }
+
+    protected showInitialWindow(urlToOpen: string | undefined): void {
+        if (this.isShowWindowEarly() || this.isShowSplashScreen()) {
             app.whenReady().then(async () => {
                 const options = await this.getLastWindowOptions();
+                // If we want to show a splash screen, don't auto open the main window
+                if (this.isShowSplashScreen()) {
+                    options.preventAutomaticShow = true;
+                }
                 this.initialWindow = await this.createWindow({ ...options });
-                this.initialWindow.show();
+                TheiaRendererAPI.onApplicationStateChanged(this.initialWindow.webContents, state => {
+                    if (state === 'ready' && urlToOpen) {
+                        this.openUrl(urlToOpen);
+                    }
+                });
+                if (this.isShowSplashScreen()) {
+                    console.log('Showing splash screen');
+                    this.configureAndShowSplashScreen(this.initialWindow);
+                }
+
+                // Show main window early if windows shall be shown early and splash screen is not configured
+                if (this.isShowWindowEarly() && !this.isShowSplashScreen()) {
+                    console.log('Showing main window early');
+                    this.initialWindow.show();
+                }
             });
         }
+    }
+
+    protected async configureAndShowSplashScreen(mainWindow: BrowserWindow): Promise<BrowserWindow> {
+        const splashScreenOptions = this.getSplashScreenOptions()!;
+        console.debug('SplashScreen options', splashScreenOptions);
+
+        const splashScreenBounds = await this.determineSplashScreenBounds(mainWindow.getBounds());
+        const splashScreenWindow = new BrowserWindow({
+            ...splashScreenBounds,
+            frame: false,
+            alwaysOnTop: true,
+            show: false,
+            transparent: true,
+            webPreferences: {
+                backgroundThrottling: false
+            }
+        });
+
+        if (this.isShowWindowEarly()) {
+            console.log('Showing splash screen early');
+            splashScreenWindow.show();
+        } else {
+            splashScreenWindow.on('ready-to-show', () => {
+                splashScreenWindow.show();
+            });
+        }
+
+        splashScreenWindow.loadFile(path.resolve(this.globals.THEIA_APP_PROJECT_PATH, splashScreenOptions.content!).toString());
+
+        // close splash screen and show main window once frontend is ready or a timeout is hit
+        const cancelTokenSource = new CancellationTokenSource();
+        const minTime = timeout(splashScreenOptions.minDuration ?? 0, cancelTokenSource.token);
+        const maxTime = timeout(splashScreenOptions.maxDuration ?? 30000, cancelTokenSource.token);
+
+        const showWindowAndCloseSplashScreen = () => {
+            cancelTokenSource.cancel();
+            if (!mainWindow.isVisible()) {
+                mainWindow.show();
+            }
+            splashScreenWindow.close();
+        };
+        TheiaRendererAPI.onApplicationStateChanged(mainWindow.webContents, state => {
+            if (state === 'ready') {
+                minTime.then(() => showWindowAndCloseSplashScreen());
+            }
+        });
+        maxTime.then(() => showWindowAndCloseSplashScreen());
+        return splashScreenWindow;
+    }
+
+    protected isShowSplashScreen(): boolean {
+        return !process.env.THEIA_NO_SPLASH && typeof this.config.electron.splashScreenOptions === 'object' && !!this.config.electron.splashScreenOptions.content;
+    }
+
+    protected getSplashScreenOptions(): ElectronFrontendApplicationConfig.SplashScreenOptions | undefined {
+        if (this.isShowSplashScreen()) {
+            return this.config.electron.splashScreenOptions;
+        }
+        return undefined;
     }
 
     /**
@@ -309,13 +416,27 @@ export class ElectronMainApplication {
         options = this.avoidOverlap(options);
         const electronWindow = this.windowFactory(options, this.config);
         const id = electronWindow.window.webContents.id;
+        this.activeWindowStack.push(id);
         this.windows.set(id, electronWindow);
-        electronWindow.onDidClose(() => this.windows.delete(id));
+        electronWindow.onDidClose(() => {
+            const stackIndex = this.activeWindowStack.indexOf(id);
+            if (stackIndex >= 0) {
+                this.activeWindowStack.splice(stackIndex, 1);
+            }
+            this.windows.delete(id);
+        });
         electronWindow.window.on('maximize', () => TheiaRendererAPI.sendWindowEvent(electronWindow.window.webContents, 'maximize'));
         electronWindow.window.on('unmaximize', () => TheiaRendererAPI.sendWindowEvent(electronWindow.window.webContents, 'unmaximize'));
-        electronWindow.window.on('focus', () => TheiaRendererAPI.sendWindowEvent(electronWindow.window.webContents, 'focus'));
+        electronWindow.window.on('focus', () => {
+            const stackIndex = this.activeWindowStack.indexOf(id);
+            if (stackIndex >= 0) {
+                this.activeWindowStack.splice(stackIndex, 1);
+            }
+            this.activeWindowStack.unshift(id);
+            TheiaRendererAPI.sendWindowEvent(electronWindow.window.webContents, 'focus');
+        });
         this.attachSaveWindowState(electronWindow.window);
-        this.configureNativeSecondaryWindowCreation(electronWindow.window);
+
         return electronWindow.window;
     }
 
@@ -362,6 +483,7 @@ export class ElectronMainApplication {
                 // Setting the following option to `true` causes some features to break, somehow.
                 // Issue: https://github.com/eclipse-theia/theia/issues/8577
                 nodeIntegrationInWorker: false,
+                backgroundThrottling: false,
                 preload: path.resolve(this.globals.THEIA_APP_PROJECT_PATH, 'lib', 'frontend', 'preload.js').toString()
             },
             ...this.config.electron?.windowOptions || {},
@@ -392,31 +514,6 @@ export class ElectronMainApplication {
         return window;
     }
 
-    /** Configures native window creation, i.e. using window.open or links with target "_blank" in the frontend. */
-    protected configureNativeSecondaryWindowCreation(electronWindow: BrowserWindow): void {
-        electronWindow.webContents.setWindowOpenHandler(() => {
-            const { minWidth, minHeight } = this.getDefaultOptions();
-            const options: BrowserWindowConstructorOptions = {
-                ...this.getDefaultTheiaSecondaryWindowBounds(),
-                // We always need the native window frame for now because the secondary window does not have Theia's title bar by default.
-                // In 'custom' title bar mode this would leave the window without any window controls (close, min, max)
-                // TODO set to this.useNativeWindowFrame when secondary windows support a custom title bar.
-                frame: true,
-                minWidth,
-                minHeight
-            };
-            if (!this.useNativeWindowFrame) {
-                // If the main window does not have a native window frame, do not show  an icon in the secondary window's native title bar.
-                // The data url is a 1x1 transparent png
-                options.icon = nativeImage.createFromDataURL('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12P4DwQACfsD/WMmxY8AAAAASUVORK5CYII=');
-            }
-            return {
-                action: 'allow',
-                overrideBrowserWindowOptions: options,
-            };
-        });
-    }
-
     /**
      * "Gently" close all windows, application will not stop if a `beforeunload` handler returns `false`.
      */
@@ -425,21 +522,30 @@ export class ElectronMainApplication {
     }
 
     protected async handleMainCommand(options: ElectronMainCommandOptions): Promise<void> {
-        if (options.secondInstance === false) {
-            await this.openWindowWithWorkspace(''); // restore previous workspace.
-        } else if (options.file === undefined) {
-            await this.openDefaultWindow();
-        } else {
-            let workspacePath: string | undefined;
+        let workspacePath: string | undefined;
+        if (options.file) {
             try {
                 workspacePath = await fs.realpath(path.resolve(options.cwd, options.file));
             } catch {
                 console.error(`Could not resolve the workspace path. "${options.file}" is not a valid 'file' option. Falling back to the default workspace location.`);
             }
-            if (workspacePath === undefined) {
+        }
+        if (workspacePath !== undefined) {
+            await this.openWindowWithWorkspace(workspacePath);
+        } else {
+            if (options.secondInstance === false) {
+                await this.openWindowWithWorkspace(''); // restore previous workspace.
+            } else if (options.file === undefined) {
                 await this.openDefaultWindow();
-            } else {
-                await this.openWindowWithWorkspace(workspacePath);
+            }
+        }
+    }
+
+    async openUrl(url: string): Promise<void> {
+        for (const id of this.activeWindowStack) {
+            const window = this.windows.get(id);
+            if (window && await window.openUrl(url)) {
+                break;
             }
         }
     }
@@ -523,7 +629,7 @@ export class ElectronMainApplication {
                 y: bounds.y,
                 frame: this.useNativeWindowFrame,
                 screenLayout: this.getCurrentScreenLayout(),
-                backgroundColor: this.customBackgroundColor
+                backgroundColor: this.customBackgroundColor ?? electronWindow.getBackgroundColor()
             };
             this.electronStore.set('windowstate', options);
         } catch (e) {
@@ -548,10 +654,6 @@ export class ElectronMainApplication {
     protected async startBackend(): Promise<number> {
         // Check if we should run everything as one process.
         const noBackendFork = process.argv.indexOf('--no-cluster') !== -1;
-        // We cannot use the `process.cwd()` as the application project path (the location of the `package.json` in other words)
-        // in a bundled electron application because it depends on the way we start it. For instance, on OS X, these are a differences:
-        // https://github.com/eclipse-theia/theia/issues/3297#issuecomment-439172274
-        process.env.THEIA_APP_PROJECT_PATH = this.globals.THEIA_APP_PROJECT_PATH;
         // Set the electron version for both the dev and the production mode. (https://github.com/eclipse-theia/theia/issues/3254)
         // Otherwise, the forked backend processes will not know that they're serving the electron frontend.
         process.env.THEIA_ELECTRON_VERSION = process.versions.electron;
@@ -622,6 +724,17 @@ export class ElectronMainApplication {
         app.on('will-quit', this.onWillQuit.bind(this));
         app.on('second-instance', this.onSecondInstance.bind(this));
         app.on('window-all-closed', this.onWindowAllClosed.bind(this));
+        app.on('web-contents-created', this.onWebContentsCreated.bind(this));
+
+        if (isWindows) {
+            const args = this.processArgv.isBundledElectronApp ? [] : [app.getAppPath()];
+            args.push('--open-url');
+            app.setAsDefaultProtocolClient(this.config.electron.uriScheme, process.execPath, args);
+        } else {
+            app.on('open-url', (evt, url) => {
+                this.openUrl(url);
+            });
+        }
     }
 
     protected onWillQuit(event: ElectronEvent): void {
@@ -629,14 +742,77 @@ export class ElectronMainApplication {
     }
 
     protected async onSecondInstance(event: ElectronEvent, argv: string[], cwd: string): Promise<void> {
-        const electronWindows = BrowserWindow.getAllWindows();
-        if (electronWindows.length > 0) {
-            const electronWindow = electronWindows[0];
-            if (electronWindow.isMinimized()) {
-                electronWindow.restore();
-            }
-            electronWindow.focus();
+        if (argv.includes('--open-url')) {
+            this.openUrl(argv[argv.length - 1]);
+        } else {
+            createYargs(this.processArgv.getProcessArgvWithoutBin(argv), process.cwd())
+                .help(false)
+                .command('$0 [file]', false,
+                    cmd => cmd
+                        .positional('file', { type: 'string' }),
+                    async args => {
+                        await this.handleMainCommand({
+                            file: args.file,
+                            cwd: process.cwd(),
+                            secondInstance: true
+                        });
+                    },
+                ).parse();
         }
+    }
+
+    protected onWebContentsCreated(event: ElectronEvent, webContents: WebContents): void {
+        // Block any in-page navigation except loading the secondary window contents
+        webContents.on('will-navigate', evt => {
+            if (new URI(evt.url).path.fsPath() !== new Path(this.globals.THEIA_SECONDARY_WINDOW_HTML_PATH).fsPath()) {
+                evt.preventDefault();
+            }
+        });
+
+        webContents.setWindowOpenHandler(details => {
+            // if it's a secondary window, allow it to open
+            if (new URI(details.url).path.fsPath() === new Path(this.globals.THEIA_SECONDARY_WINDOW_HTML_PATH).fsPath()) {
+                const { minWidth, minHeight } = this.getDefaultOptions();
+                const options: BrowserWindowConstructorOptions = {
+                    ...this.getDefaultTheiaSecondaryWindowBounds(),
+                    // We always need the native window frame for now because the secondary window does not have Theia's title bar by default.
+                    // In 'custom' title bar mode this would leave the window without any window controls (close, min, max)
+                    // TODO set to this.useNativeWindowFrame when secondary windows support a custom title bar.
+                    frame: true,
+                    minWidth,
+                    minHeight
+                };
+                if (!this.useNativeWindowFrame) {
+                    // If the main window does not have a native window frame, do not show  an icon in the secondary window's native title bar.
+                    // The data url is a 1x1 transparent png
+                    options.icon = nativeImage.createFromDataURL(
+                        'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12P4DwQACfsD/WMmxY8AAAAASUVORK5CYII=');
+                }
+                return {
+                    action: 'allow',
+                    overrideBrowserWindowOptions: options,
+                };
+            } else {
+                const uri: URI = new URI(details.url);
+                let okToOpen = uri.scheme === 'https' || uri.scheme === 'http';
+                if (!okToOpen) {
+                    const button = dialog.showMessageBoxSync(BrowserWindow.fromWebContents(webContents)!, {
+                        message: `Open link\n\n${details.url}\n\nin the system handler?`,
+                        type: 'question',
+                        title: 'Open Link',
+                        buttons: ['OK', 'Cancel'],
+                        defaultId: 1,
+                        cancelId: 1
+                    });
+                    okToOpen = button === 0;
+                }
+                if (okToOpen) {
+                    shell.openExternal(details.url, {});
+                }
+
+                return { action: 'deny' };
+            }
+        });
     }
 
     protected onWindowAllClosed(event: ElectronEvent): void {

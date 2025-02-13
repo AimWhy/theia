@@ -14,12 +14,12 @@
 // SPDX-License-Identifier: EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0
 // *****************************************************************************
 
-import { Position, Range, TextDocumentSaveReason, TextDocumentContentChangeEvent } from '@theia/core/shared/vscode-languageserver-protocol';
+import { Position, Range, TextDocumentSaveReason } from '@theia/core/shared/vscode-languageserver-protocol';
 import { TextEditorDocument, EncodingMode, FindMatchesOptions, FindMatch, EditorPreferences } from '@theia/editor/lib/browser';
 import { DisposableCollection, Disposable } from '@theia/core/lib/common/disposable';
 import { Emitter, Event } from '@theia/core/lib/common/event';
 import { CancellationTokenSource, CancellationToken } from '@theia/core/lib/common/cancellation';
-import { Resource, ResourceError, ResourceVersion, UNTITLED_SCHEME } from '@theia/core/lib/common/resource';
+import { Resource, ResourceError, ResourceVersion } from '@theia/core/lib/common/resource';
 import { Saveable, SaveOptions } from '@theia/core/lib/browser/saveable';
 import { MonacoToProtocolConverter } from './monaco-to-protocol-converter';
 import { ProtocolToMonacoConverter } from './protocol-to-monaco-converter';
@@ -33,6 +33,7 @@ import { IModelService } from '@theia/monaco-editor-core/esm/vs/editor/common/se
 import { createTextBufferFactoryFromStream } from '@theia/monaco-editor-core/esm/vs/editor/common/model/textModel';
 import { editorGeneratedPreferenceProperties } from '@theia/editor/lib/browser/editor-generated-preference-schema';
 import { MarkdownString } from '@theia/core/lib/common/markdown-rendering';
+import { BinaryBuffer } from '@theia/core/lib/common/buffer';
 
 export {
     TextDocumentSaveReason
@@ -47,13 +48,18 @@ export interface WillSaveMonacoModelEvent {
 
 export interface MonacoModelContentChangedEvent {
     readonly model: MonacoEditorModel;
-    readonly contentChanges: TextDocumentContentChangeEvent[];
+    readonly contentChanges: MonacoTextDocumentContentChange[];
+}
+
+export interface MonacoTextDocumentContentChange {
+    readonly range: Range;
+    readonly rangeOffset: number;
+    readonly rangeLength: number;
+    readonly text: string;
 }
 
 export class MonacoEditorModel implements IResolvedTextEditorModel, TextEditorDocument {
 
-    autoSave: EditorPreferences['files.autoSave'] = 'afterDelay';
-    autoSaveDelay = 500;
     suppressOpenEditorWhenDirty = false;
     lineNumbersMinChars = 3;
 
@@ -69,6 +75,10 @@ export class MonacoEditorModel implements IResolvedTextEditorModel, TextEditorDo
 
     protected readonly onDidChangeContentEmitter = new Emitter<MonacoModelContentChangedEvent>();
     readonly onDidChangeContent = this.onDidChangeContentEmitter.event;
+
+    get onContentChanged(): Event<void> {
+        return (listener, thisArgs, disposables) => this.onDidChangeContent(() => listener(), thisArgs, disposables);
+    }
 
     protected readonly onDidSaveModelEmitter = new Emitter<ITextModel>();
     readonly onDidSaveModel = this.onDidSaveModelEmitter.event;
@@ -108,6 +118,14 @@ export class MonacoEditorModel implements IResolvedTextEditorModel, TextEditorDo
         this.resolveModel = this.readContents().then(
             content => this.initialize(content || '')
         );
+    }
+
+    undo(): void {
+        this.model.undo();
+    }
+
+    redo(): void {
+        this.model.redo();
     }
 
     dispose(): void {
@@ -184,7 +202,7 @@ export class MonacoEditorModel implements IResolvedTextEditorModel, TextEditorDo
             const languageSelection = StandaloneServices.get(ILanguageService).createByFilepathOrFirstLine(uri, firstLine);
             this.model = StandaloneServices.get(IModelService).createModel(value, languageSelection, uri);
             this.resourceVersion = this.resource.version;
-            this.setDirty(this._dirty || (this.resource.uri.scheme === UNTITLED_SCHEME && this.model.getValueLength() > 0));
+            this.setDirty(this._dirty || (!!this.resource.initiallyDirty));
             this.updateSavedVersionId();
             this.toDispose.push(this.model);
             this.toDispose.push(this.model.onDidChangeContent(event => this.fireDidChangeContent(event)));
@@ -364,7 +382,7 @@ export class MonacoEditorModel implements IResolvedTextEditorModel, TextEditorDo
     }
 
     save(options?: SaveOptions): Promise<void> {
-        return this.scheduleSave(TextDocumentSaveReason.Manual, undefined, undefined, options);
+        return this.scheduleSave(options?.saveReason ?? TextDocumentSaveReason.Manual, undefined, undefined, options);
     }
 
     protected pendingOperation = Promise.resolve();
@@ -452,21 +470,7 @@ export class MonacoEditorModel implements IResolvedTextEditorModel, TextEditorDo
         }
         this.cancelSync();
         this.setDirty(true);
-        this.doAutoSave();
         this.trace(log => log('MonacoEditorModel.markAsDirty - exit'));
-    }
-
-    protected doAutoSave(): void {
-        if (this.autoSave !== 'off' && this.resource.uri.scheme !== UNTITLED_SCHEME) {
-            const token = this.cancelSave();
-            this.toDisposeOnAutoSave.dispose();
-            const handle = window.setTimeout(() => {
-                this.scheduleSave(TextDocumentSaveReason.AfterDelay, token);
-            }, this.autoSaveDelay);
-            this.toDisposeOnAutoSave.push(Disposable.create(() =>
-                window.clearTimeout(handle))
-            );
-        }
     }
 
     protected saveCancellationTokenSource = new CancellationTokenSource();
@@ -482,8 +486,8 @@ export class MonacoEditorModel implements IResolvedTextEditorModel, TextEditorDo
     }
 
     protected ignoreContentChanges = false;
-    protected readonly contentChanges: TextDocumentContentChangeEvent[] = [];
-    protected pushContentChanges(contentChanges: TextDocumentContentChangeEvent[]): void {
+    protected readonly contentChanges: MonacoTextDocumentContentChange[] = [];
+    protected pushContentChanges(contentChanges: MonacoTextDocumentContentChange[]): void {
         if (!this.ignoreContentChanges) {
             this.contentChanges.push(...contentChanges);
         }
@@ -506,11 +510,12 @@ export class MonacoEditorModel implements IResolvedTextEditorModel, TextEditorDo
         const contentChanges = event.changes.map(change => this.asTextDocumentContentChangeEvent(change));
         return { model: this, contentChanges };
     }
-    protected asTextDocumentContentChangeEvent(change: monaco.editor.IModelContentChange): TextDocumentContentChangeEvent {
+    protected asTextDocumentContentChangeEvent(change: monaco.editor.IModelContentChange): MonacoTextDocumentContentChange {
         const range = this.m2p.asRange(change.range);
+        const rangeOffset = change.rangeOffset;
         const rangeLength = change.rangeLength;
         const text = change.text;
-        return { range, rangeLength, text };
+        return { range, rangeOffset, rangeLength, text };
     }
 
     protected applyEdits(
@@ -548,7 +553,7 @@ export class MonacoEditorModel implements IResolvedTextEditorModel, TextEditorDo
         }
 
         const changes = [...this.contentChanges];
-        if (changes.length === 0 && !overwriteEncoding && reason !== TextDocumentSaveReason.Manual) {
+        if ((changes.length === 0 && !this.resource.initiallyDirty) && !overwriteEncoding && reason !== TextDocumentSaveReason.Manual) {
             return;
         }
 
@@ -663,8 +668,12 @@ export class MonacoEditorModel implements IResolvedTextEditorModel, TextEditorDo
     }
 
     applySnapshot(snapshot: Saveable.Snapshot): void {
-        const value = 'value' in snapshot ? snapshot.value : snapshot.read() ?? '';
+        const value = Saveable.Snapshot.read(snapshot) ?? '';
         this.model.setValue(value);
+    }
+
+    async serialize(): Promise<BinaryBuffer> {
+        return BinaryBuffer.fromString(this.model.getValue());
     }
 
     protected trace(loggable: Loggable): void {

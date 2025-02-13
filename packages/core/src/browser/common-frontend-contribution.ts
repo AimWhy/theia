@@ -61,11 +61,14 @@ import { ConfirmDialog, confirmExit, ConfirmSaveDialog, Dialog } from './dialogs
 import { WindowService } from './window/window-service';
 import { FrontendApplicationConfigProvider } from './frontend-application-config-provider';
 import { DecorationStyle } from './decoration-style';
-import { isPinned, Title, togglePinned, Widget } from './widgets';
-import { SaveResourceService } from './save-resource-service';
+import { codicon, isPinned, Title, togglePinned, Widget } from './widgets';
+import { SaveableService } from './saveable-service';
 import { UserWorkingDirectoryProvider } from './user-working-directory-provider';
 import { UNTITLED_SCHEME, UntitledResourceResolver } from '../common';
 import { LanguageQuickPickService } from './i18n/language-quick-pick-service';
+import { SidebarMenu } from './shell/sidebar-menu-widget';
+import { UndoRedoHandlerService } from './undo-redo-handler';
+import { timeout } from '../common/promise-util';
 
 export namespace CommonMenus {
 
@@ -280,13 +283,25 @@ export namespace CommonCommands {
         category: VIEW_CATEGORY,
         label: 'Toggle Menu Bar'
     });
+    /**
+     * Command Parameters:
+     * - `fileName`: string
+     * - `directory`: URI
+     */
+    export const NEW_FILE = Command.toDefaultLocalizedCommand({
+        id: 'workbench.action.files.newFile',
+        category: FILE_CATEGORY
+    });
+    // This command immediately opens a new untitled text file
+    // Some VS Code extensions use this command to create new files
     export const NEW_UNTITLED_TEXT_FILE = Command.toDefaultLocalizedCommand({
-        id: 'workbench.action.files.newUntitledTextFile',
+        id: 'workbench.action.files.newUntitledFile',
         category: FILE_CATEGORY,
         label: 'New Untitled Text File'
     });
-    export const NEW_UNTITLED_FILE = Command.toDefaultLocalizedCommand({
-        id: 'workbench.action.files.newUntitledFile',
+    // This command opens a quick pick to select a file type to create
+    export const PICK_NEW_FILE = Command.toDefaultLocalizedCommand({
+        id: 'workbench.action.files.pickNewFile',
         category: CREATE_CATEGORY,
         label: 'New File...'
     });
@@ -376,7 +391,7 @@ export class CommonFrontendContribution implements FrontendApplicationContributi
         @inject(OpenerService) protected readonly openerService: OpenerService,
         @inject(AboutDialog) protected readonly aboutDialog: AboutDialog,
         @inject(AsyncLocalizationProvider) protected readonly localizationProvider: AsyncLocalizationProvider,
-        @inject(SaveResourceService) protected readonly saveResourceService: SaveResourceService,
+        @inject(SaveableService) protected readonly saveResourceService: SaveableService,
     ) { }
 
     @inject(ContextKeyService)
@@ -433,7 +448,11 @@ export class CommonFrontendContribution implements FrontendApplicationContributi
     @inject(UntitledResourceResolver)
     protected readonly untitledResourceResolver: UntitledResourceResolver;
 
+    @inject(UndoRedoHandlerService)
+    protected readonly undoRedoHandlerService: UndoRedoHandlerService;
+
     protected pinnedKey: ContextKey<boolean>;
+    protected inputFocus: ContextKey<boolean>;
 
     async configure(app: FrontendApplication): Promise<void> {
         // FIXME: This request blocks valuable startup time (~200ms).
@@ -448,6 +467,9 @@ export class CommonFrontendContribution implements FrontendApplicationContributi
         this.contextKeyService.createKey<boolean>('isMac', OS.type() === OS.Type.OSX);
         this.contextKeyService.createKey<boolean>('isWindows', OS.type() === OS.Type.Windows);
         this.contextKeyService.createKey<boolean>('isWeb', !this.isElectron());
+        this.inputFocus = this.contextKeyService.createKey<boolean>('inputFocus', false);
+        this.updateInputFocus();
+        browser.onDomEvent(document, 'focusin', () => this.updateInputFocus());
 
         this.pinnedKey = this.contextKeyService.createKey<boolean>('activeEditorIsPinned', false);
         this.updatePinnedKey();
@@ -463,17 +485,18 @@ export class CommonFrontendContribution implements FrontendApplicationContributi
 
         app.shell.leftPanelHandler.addBottomMenu({
             id: 'settings-menu',
-            iconClass: 'codicon codicon-settings-gear',
+            iconClass: codicon('settings-gear'),
             title: nls.localizeByDefault(CommonCommands.MANAGE_CATEGORY),
             menuPath: MANAGE_MENU,
-            order: 1,
+            order: 0,
         });
-        const accountsMenu = {
+        const accountsMenu: SidebarMenu = {
             id: 'accounts-menu',
-            iconClass: 'codicon codicon-person',
+            iconClass: codicon('account'),
             title: nls.localizeByDefault('Accounts'),
             menuPath: ACCOUNTS_MENU,
-            order: 0,
+            order: 1,
+            onDidBadgeChange: this.authenticationService.onDidUpdateSignInCount
         };
         this.authenticationService.onDidRegisterAuthenticationProvider(() => {
             app.shell.leftPanelHandler.addBottomMenu(accountsMenu);
@@ -502,6 +525,15 @@ export class CommonFrontendContribution implements FrontendApplicationContributi
         }
     }
 
+    protected updateInputFocus(): void {
+        const activeElement = document.activeElement;
+        if (activeElement) {
+            const isInput = activeElement.tagName?.toLowerCase() === 'input'
+                || activeElement.tagName?.toLowerCase() === 'textarea';
+            this.inputFocus.set(isInput);
+        }
+    }
+
     protected updatePinnedKey(): void {
         const activeTab = this.shell.findTabBar();
         const pinningTarget = activeTab && this.shell.findTitle(activeTab);
@@ -521,7 +553,7 @@ export class CommonFrontendContribution implements FrontendApplicationContributi
                 if (newValue === 'compact') {
                     this.shell.leftPanelHandler.addTopMenu({
                         id: mainMenuId,
-                        iconClass: 'codicon codicon-menu',
+                        iconClass: `theia-compact-menu ${codicon('menu')}`,
                         title: nls.localizeByDefault('Application Menu'),
                         menuPath: MAIN_MENU_BAR,
                         order: 0,
@@ -738,7 +770,7 @@ export class CommonFrontendContribution implements FrontendApplicationContributi
         });
 
         registry.registerMenuAction(CommonMenus.FILE_NEW_TEXT, {
-            commandId: CommonCommands.NEW_UNTITLED_FILE.id,
+            commandId: CommonCommands.PICK_NEW_FILE.id,
             label: nls.localizeByDefault('New File...'),
             order: 'a1'
         });
@@ -790,10 +822,14 @@ export class CommonFrontendContribution implements FrontendApplicationContributi
         }));
 
         commandRegistry.registerCommand(CommonCommands.UNDO, {
-            execute: () => document.execCommand('undo')
+            execute: () => {
+                this.undoRedoHandlerService.undo();
+            }
         });
         commandRegistry.registerCommand(CommonCommands.REDO, {
-            execute: () => document.execCommand('redo')
+            execute: () => {
+                this.undoRedoHandlerService.redo();
+            }
         });
         commandRegistry.registerCommand(CommonCommands.SELECT_ALL, {
             execute: () => document.execCommand('selectAll')
@@ -892,7 +928,13 @@ export class CommonFrontendContribution implements FrontendApplicationContributi
             execute: () => this.shell.closeTabs('main', title => title.closable)
         });
         commandRegistry.registerCommand(CommonCommands.COLLAPSE_PANEL, new CurrentWidgetCommandAdapter(this.shell, {
-            isEnabled: (_title, tabbar) => Boolean(tabbar && ApplicationShell.isSideArea(this.shell.getAreaFor(tabbar))),
+            isEnabled: (_title, tabbar) => {
+                if (tabbar) {
+                    const area = this.shell.getAreaFor(tabbar);
+                    return ApplicationShell.isSideArea(area) && this.shell.isExpanded(area);
+                }
+                return false;
+            },
             isVisible: (_title, tabbar) => Boolean(tabbar && ApplicationShell.isSideArea(this.shell.getAreaFor(tabbar))),
             execute: (_title, tabbar) => tabbar && this.shell.collapsePanel(this.shell.getAreaFor(tabbar)!)
         }));
@@ -989,10 +1031,15 @@ export class CommonFrontendContribution implements FrontendApplicationContributi
             execute: async () => {
                 const untitledUri = this.untitledResourceResolver.createUntitledURI('', await this.workingDirProvider.getUserWorkingDir());
                 this.untitledResourceResolver.resolve(untitledUri);
-                return open(this.openerService, untitledUri);
+                const editor = await open(this.openerService, untitledUri);
+                // Wait for all of the listeners of the `onDidOpen` event to be notified
+                await timeout(50);
+                // Afterwards, we can return from the command with the newly created editor
+                // If we don't wait, we return from the command before the plugin API has been notified of the new editor
+                return editor;
             }
         });
-        commandRegistry.registerCommand(CommonCommands.NEW_UNTITLED_FILE, {
+        commandRegistry.registerCommand(CommonCommands.PICK_NEW_FILE, {
             execute: async () => this.showNewFilePicker()
         });
 
@@ -1056,7 +1103,7 @@ export class CommonFrontendContribution implements FrontendApplicationContributi
             },
             {
                 command: CommonCommands.REDO.id,
-                keybinding: 'ctrlcmd+shift+z'
+                keybinding: isOSX ? 'ctrlcmd+shift+z' : 'ctrlcmd+y'
             },
             {
                 command: CommonCommands.SELECT_ALL.id,
@@ -1149,7 +1196,7 @@ export class CommonFrontendContribution implements FrontendApplicationContributi
                 keybinding: this.isElectron() ? 'ctrlcmd+n' : 'alt+n',
             },
             {
-                command: CommonCommands.NEW_UNTITLED_FILE.id,
+                command: CommonCommands.PICK_NEW_FILE.id,
                 keybinding: 'ctrlcmd+alt+n'
             }
         );
@@ -1167,7 +1214,7 @@ export class CommonFrontendContribution implements FrontendApplicationContributi
     }
 
     protected async openAbout(): Promise<void> {
-        this.aboutDialog.open();
+        this.aboutDialog.open(false);
     }
 
     protected shouldPreventClose = false;
@@ -1399,7 +1446,7 @@ export class CommonFrontendContribution implements FrontendApplicationContributi
         const items = [...itemsByTheme.light, ...itemsByTheme.dark, ...itemsByTheme.hc, ...itemsByTheme.hcLight];
         this.quickInputService?.showQuickPick(items,
             {
-                placeholder: nls.localizeByDefault('Select Color Theme (Up/Down Keys to Preview)'),
+                placeholder: nls.localizeByDefault('Select Color Theme'),
                 activeItem: items.find(item => item.id === resetTo),
                 onDidChangeSelection: (_, selectedItems) => {
                     resetTo = undefined;
@@ -1424,6 +1471,7 @@ export class CommonFrontendContribution implements FrontendApplicationContributi
         const items: QuickPickItemOrSeparator[] = [
             {
                 label: nls.localizeByDefault('New Text File'),
+                description: nls.localizeByDefault('Built-in'),
                 execute: async () => this.commandRegistry.executeCommand(CommonCommands.NEW_UNTITLED_TEXT_FILE.id)
             },
             ...newFileContributions.children
@@ -1446,10 +1494,43 @@ export class CommonFrontendContribution implements FrontendApplicationContributi
 
                 })
         ];
+
+        const CREATE_NEW_FILE_ITEM_ID = 'create-new-file';
+        const hasNewFileHandler = this.commandRegistry.getActiveHandler(CommonCommands.NEW_FILE.id) !== undefined;
+        // Create a "Create New File" item only if there is a NEW_FILE command handler.
+        const createNewFileItem: QuickPickItem & { value?: string } | undefined = hasNewFileHandler ? {
+            id: CREATE_NEW_FILE_ITEM_ID,
+            label: nls.localizeByDefault('Create New File ({0})'),
+            description: nls.localizeByDefault('Built-in'),
+            execute: async () => {
+                if (createNewFileItem?.value) {
+                    const parent = await this.workingDirProvider.getUserWorkingDir();
+                    // Exec NEW_FILE command with the file name and parent dir as arguments
+                    return this.commandRegistry.executeCommand(CommonCommands.NEW_FILE.id, createNewFileItem.value, parent);
+                }
+            }
+        } : undefined;
+
         this.quickInputService.showQuickPick(items, {
             title: nls.localizeByDefault('New File...'),
             placeholder: nls.localizeByDefault('Select File Type or Enter File Name...'),
-            canSelectMany: false
+            canSelectMany: false,
+            onDidChangeValue: picker => {
+                if (createNewFileItem === undefined) {
+                    return;
+                }
+                // Dynamically show or hide the "Create New File" item based on the input value.
+                if (picker.value) {
+                    createNewFileItem.alwaysShow = true;
+                    createNewFileItem.value = picker.value;
+                    createNewFileItem.label = nls.localizeByDefault('Create New File ({0})', picker.value);
+                    picker.items = [...items, createNewFileItem];
+                } else {
+                    createNewFileItem.alwaysShow = false;
+                    createNewFileItem.value = undefined;
+                    picker.items = items.filter(item => item !== createNewFileItem);
+                }
+            }
         });
     }
 
@@ -1852,6 +1933,94 @@ export class CommonFrontendContribution implements FrontendApplicationContributi
                     hcDark: Color.white,
                     hcLight: Color.white
                 }, description: 'Status bar warning items foreground color. Warning items stand out from other status bar entries to indicate warning conditions. The status bar is shown in the bottom of the window.'
+            },
+
+            // editor find
+
+            {
+                id: 'editor.findMatchBackground',
+                defaults: {
+                    light: '#A8AC94',
+                    dark: '#515C6A',
+                    hcDark: undefined,
+                    hcLight: undefined
+                },
+                description: 'Color of the current search match.'
+            },
+
+            {
+                id: 'editor.findMatchForeground',
+                defaults: {
+                    light: undefined,
+                    dark: undefined,
+                    hcDark: undefined,
+                    hcLight: undefined
+                },
+                description: 'Text color of the current search match.'
+            },
+            {
+                id: 'editor.findMatchHighlightBackground',
+                defaults: {
+                    light: '#EA5C0055',
+                    dark: '#EA5C0055',
+                    hcDark: undefined,
+                    hcLight: undefined
+                },
+                description: 'Color of the other search matches. The color must not be opaque so as not to hide underlying decorations.'
+            },
+
+            {
+                id: 'editor.findMatchHighlightForeground',
+                defaults: {
+                    light: undefined,
+                    dark: undefined,
+                    hcDark: undefined,
+                    hcLight: undefined
+                },
+                description: 'Foreground color of the other search matches.'
+            },
+
+            {
+                id: 'editor.findRangeHighlightBackground',
+                defaults: {
+                    dark: '#3a3d4166',
+                    light: '#b4b4b44d',
+                    hcDark: undefined,
+                    hcLight: undefined
+                },
+                description: 'Color of the range limiting the search. The color must not be opaque so as not to hide underlying decorations.'
+            },
+
+            {
+                id: 'editor.findMatchBorder',
+                defaults: {
+                    light: undefined,
+                    dark: undefined,
+                    hcDark: 'activeContrastBorder',
+                    hcLight: 'activeContrastBorder'
+                },
+                description: 'Border color of the current search match.'
+            },
+            {
+                id: 'editor.findMatchHighlightBorder',
+                defaults: {
+                    light: undefined,
+                    dark: undefined,
+                    hcDark: 'activeContrastBorder',
+                    hcLight: 'activeContrastBorder'
+                },
+                description: 'Border color of the other search matches.'
+            },
+
+            {
+                id: 'editor.findRangeHighlightBorder',
+                defaults: {
+                    dark: undefined,
+                    light: undefined,
+                    hcDark: Color.transparent('activeContrastBorder', 0.4),
+                    hcLight: Color.transparent('activeContrastBorder', 0.4)
+                },
+                description: 'Border color of the range limiting the search. The color must not be opaque so as not to hide underlying decorations.'
             },
 
             // Quickinput colors should be aligned with https://code.visualstudio.com/api/references/theme-color#quick-picker

@@ -44,7 +44,7 @@ import {
     DocumentHighlight
 } from '@theia/plugin-ext/lib/common/plugin-api-rpc-model';
 import { DocumentsMainImpl } from '@theia/plugin-ext/lib/main/browser/documents-main';
-import { isUriComponents, toDocumentSymbol, toPosition } from '@theia/plugin-ext/lib/plugin/type-converters';
+import { isUriComponents, toMergedSymbol, toPosition } from '@theia/plugin-ext/lib/plugin/type-converters';
 import { ViewColumn } from '@theia/plugin-ext/lib/plugin/types-impl';
 import { WorkspaceCommands } from '@theia/workspace/lib/browser';
 import { WorkspaceService, WorkspaceInput } from '@theia/workspace/lib/browser/workspace-service';
@@ -79,8 +79,17 @@ import { WindowService } from '@theia/core/lib/browser/window/window-service';
 import * as monaco from '@theia/monaco-editor-core';
 import { VSCodeExtensionUri } from '../common/plugin-vscode-uri';
 import { CodeEditorWidgetUtil } from '@theia/plugin-ext/lib/main/browser/menus/vscode-theia-menu-mappings';
+import { OutlineViewContribution } from '@theia/outline-view/lib/browser/outline-view-contribution';
+import { Range } from '@theia/plugin';
+import { MonacoLanguages } from '@theia/monaco/lib/browser/monaco-languages';
 
 export namespace VscodeCommands {
+
+    export const GET_CODE_EXCHANGE_ENDPOINTS: Command = {
+        id: 'workbench.getCodeExchangeProxyEndpoints' // this command is used in the github auth built-in
+        // see: https://github.com/microsoft/vscode/blob/191be39e5ac872e03f9d79cc859d9917f40ad935/extensions/github-authentication/src/githubServer.ts#L60
+    };
+
     export const OPEN: Command = {
         id: 'vscode.open'
     };
@@ -180,6 +189,10 @@ export class PluginVscodeCommandsContribution implements CommandContribution {
     protected readonly windowService: WindowService;
     @inject(MessageService)
     protected readonly messageService: MessageService;
+    @inject(OutlineViewContribution)
+    protected outlineViewContribution: OutlineViewContribution;
+    @inject(MonacoLanguages)
+    protected monacoLanguages: MonacoLanguages;
 
     private async openWith(commandId: string, resource: URI, columnOrOptions?: ViewColumn | TextDocumentShowOptions, openerId?: string): Promise<boolean> {
         if (!resource) {
@@ -227,6 +240,10 @@ export class PluginVscodeCommandsContribution implements CommandContribution {
     }
 
     registerCommands(commands: CommandRegistry): void {
+        commands.registerCommand(VscodeCommands.GET_CODE_EXCHANGE_ENDPOINTS, {
+            execute: () => undefined // this is a dummy implementation: only used in the case of web apps, which is not supported yet.
+        });
+
         commands.registerCommand(VscodeCommands.OPEN, {
             isVisible: () => false,
             execute: async (resource: URI | string, columnOrOptions?: ViewColumn | TextDocumentShowOptions) => {
@@ -611,7 +628,7 @@ export class PluginVscodeCommandsContribution implements CommandContribution {
                     if (!Array.isArray(value) || value === undefined) {
                         return undefined;
                     }
-                    return value.map(loc => toDocumentSymbol(loc));
+                    return value.map(loc => toMergedSymbol(resource, loc));
                 })
             }
         );
@@ -642,6 +659,38 @@ export class PluginVscodeCommandsContribution implements CommandContribution {
                     commands.executeCommand<TextEdit[]>('_executeFormatOnTypeProvider', monaco.Uri.from(resource), position, ch, options))
             }
         );
+        commands.registerCommand(
+            {
+                id: 'vscode.executeFoldingRangeProvider'
+            },
+            {
+                execute: ((resource: URI, position: Position) =>
+                    commands.executeCommand<TextEdit[]>('_executeFoldingRangeProvider', monaco.Uri.from(resource), position))
+            }
+        );
+        commands.registerCommand(
+            {
+                id: 'vscode.executeCodeActionProvider'
+            },
+            {
+                execute: ((resource: URI, range: Range, kind?: string, itemResolveCount?: number) =>
+                    commands.executeCommand<TextEdit[]>('_executeCodeActionProvider', monaco.Uri.from(resource), range, kind, itemResolveCount))
+            }
+        );
+        commands.registerCommand(
+            {
+                id: 'vscode.executeWorkspaceSymbolProvider'
+            },
+            {
+                execute: async (queryString: string) =>
+                    (await Promise.all(
+                        this.monacoLanguages.workspaceSymbolProviders
+                            .map(async provider => provider.provideWorkspaceSymbols({ query: queryString }, new CancellationTokenSource().token))))
+                        .flatMap(symbols => symbols)
+                        .filter(symbols => !!symbols)
+            }
+        );
+
         commands.registerCommand(
             {
                 id: 'vscode.prepareCallHierarchy'
@@ -911,6 +960,11 @@ export class PluginVscodeCommandsContribution implements CommandContribution {
                     collections: device.collections
                 };
             }
+        });
+
+        // required by Jupyter for the show table of contents action
+        commands.registerCommand({ id: 'outline.focus' }, {
+            execute: () => this.outlineViewContribution.openView({ activate: true })
         });
     }
 

@@ -20,16 +20,17 @@
 
 import { UriComponents, URI } from '@theia/core/lib/common/uri';
 import { CellRange } from '@theia/notebook/lib/common';
-import { NotebookEditorWidget } from '@theia/notebook/lib/browser';
+import { NotebookEditorWidget, NotebookService } from '@theia/notebook/lib/browser';
 import { MAIN_RPC_CONTEXT, NotebookDocumentShowOptions, NotebookEditorRevealType, NotebookEditorsExt, NotebookEditorsMain } from '../../../common';
 import { RPCProtocol } from '../../../common/rpc-protocol';
 import { interfaces } from '@theia/core/shared/inversify';
-import { open, OpenerService } from '@theia/core/lib/browser';
+import { NotebookOpenHandler } from '@theia/notebook/lib/browser/notebook-open-handler';
 
 export class NotebookEditorsMainImpl implements NotebookEditorsMain {
 
     protected readonly proxy: NotebookEditorsExt;
-    protected readonly openerService: OpenerService;
+    protected readonly notebookService: NotebookService;
+    protected readonly notebookOpenHandler: NotebookOpenHandler;
 
     protected readonly mainThreadEditors = new Map<string, NotebookEditorWidget>();
 
@@ -38,23 +39,40 @@ export class NotebookEditorsMainImpl implements NotebookEditorsMain {
         container: interfaces.Container
     ) {
         this.proxy = rpc.getProxy(MAIN_RPC_CONTEXT.NOTEBOOK_EDITORS_EXT);
-        this.openerService = container.get(OpenerService);
+        this.notebookService = container.get(NotebookService);
+        this.notebookOpenHandler = container.get(NotebookOpenHandler);
     }
 
     async $tryShowNotebookDocument(uriComponents: UriComponents, viewType: string, options: NotebookDocumentShowOptions): Promise<string> {
-        const editor = await open(this.openerService, URI.fromComponents(uriComponents), {});
-        return (editor as NotebookEditorWidget).id;
+        const editor = await this.notebookOpenHandler.open(URI.fromComponents(uriComponents), {
+            notebookType: viewType
+        });
+        await editor.ready;
+        return editor.id;
     }
     $tryRevealRange(id: string, range: CellRange, revealType: NotebookEditorRevealType): Promise<void> {
         throw new Error('Method not implemented.');
     }
     $trySetSelections(id: string, range: CellRange[]): void {
-        throw new Error('Method not implemented.');
+        if (!this.mainThreadEditors.has(id)) {
+            throw new Error('Editor not found');
+        }
+        const editor = this.mainThreadEditors.get(id);
+        editor?.model?.setSelectedCell(editor.model.cells[range[0].start]);
     }
 
-    handleEditorsAdded(editors: readonly NotebookEditorWidget[]): void {
+    async handleEditorsAdded(editors: readonly NotebookEditorWidget[]): Promise<void> {
         for (const editor of editors) {
             this.mainThreadEditors.set(editor.id, editor);
+            const model = await editor.ready;
+            model.onDidChangeSelectedCell(e => {
+                const newCellIndex = e.cell ? model.cells.indexOf(e.cell) : -1;
+                this.proxy.$acceptEditorPropertiesChanged(editor.id, {
+                    selections: {
+                        selections: newCellIndex >= 0 ? [{ start: newCellIndex, end: newCellIndex }] : []
+                    }
+                });
+            });
         }
     }
 

@@ -84,7 +84,7 @@ export interface NotebookTextModelLike { uri: URI; viewType: string }
 
 class KernelInfo {
 
-    private static instanceCounter = 0;
+    protected static instanceCounter = 0;
 
     score: number;
     readonly kernel: NotebookKernel;
@@ -130,7 +130,7 @@ export class SourceCommand implements Disposable {
         this.onDidChangeStateEmitter.fire();
     }
 
-    private async runCommand(commandService: CommandService): Promise<void> {
+    protected async runCommand(commandService: CommandService): Promise<void> {
         try {
             await commandService.executeCommand(this.command.id, {
                 uri: this.model.uri,
@@ -239,12 +239,16 @@ export class NotebookKernelService {
         const all = kernels.map(obj => obj.kernel);
 
         // bound kernel
-        const selectedId = this.notebookBindings[`${notebook.viewType}/${notebook.uri}`];
-        const selected = selectedId ? this.kernels.get(selectedId)?.kernel : undefined;
+        const selected = this.getSelectedNotebookKernel(notebook);
         const suggestions = kernels.filter(item => item.instanceAffinity > 1).map(item => item.kernel); // TODO implement notebookAffinity
         const hidden = kernels.filter(item => item.instanceAffinity < 0).map(item => item.kernel);
         return { all, selected, suggestions, hidden };
 
+    }
+
+    getSelectedNotebookKernel(notebook: NotebookTextModelLike): NotebookKernel | undefined {
+        const selectedId = this.notebookBindings[`${notebook.viewType}/${notebook.uri}`];
+        return selectedId ? this.kernels.get(selectedId)?.kernel : undefined;
     }
 
     selectKernelForNotebook(kernel: NotebookKernel | undefined, notebook: NotebookTextModelLike): void {
@@ -274,7 +278,7 @@ export class NotebookKernelService {
         return this.kernels.get(id)?.kernel;
     }
 
-    private static score(kernel: NotebookKernel, notebook: NotebookTextModelLike): number {
+    protected static score(kernel: NotebookKernel, notebook: NotebookTextModelLike): number {
         if (kernel.viewType === notebook.viewType) {
             return 10;
         } else if (kernel.viewType === '*') {
@@ -284,7 +288,7 @@ export class NotebookKernelService {
         }
     }
 
-    private tryAutoBindNotebook(notebook: NotebookModel, onlyThisKernel?: NotebookKernel): void {
+    protected tryAutoBindNotebook(notebook: NotebookModel, onlyThisKernel?: NotebookKernel): void {
 
         const id = this.notebookBindings[`${notebook.viewType}/${notebook.uri}`];
         if (!id) {

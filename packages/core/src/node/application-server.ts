@@ -26,9 +26,9 @@ export class ApplicationServerImpl implements ApplicationServer {
     protected readonly applicationPackage: ApplicationPackage;
 
     getExtensionsInfos(): Promise<ExtensionInfo[]> {
-        const extensions = this.applicationPackage.extensionPackages;
-        const infos: ExtensionInfo[] = extensions.map(extension => ({ name: extension.name, version: extension.version }));
-        return Promise.resolve(infos);
+        // @ts-expect-error
+        const appInfo: ExtensionInfo[] = globalThis.extensionInfo;
+        return Promise.resolve(appInfo);
     }
 
     getApplicationInfo(): Promise<ApplicationInfo | undefined> {
@@ -47,6 +47,10 @@ export class ApplicationServerImpl implements ApplicationServer {
 
     getApplicationRoot(): Promise<string> {
         return Promise.resolve(this.applicationPackage.projectPath);
+    }
+
+    getApplicationPlatform(): Promise<string> {
+        return Promise.resolve(`${process.platform}-${process.arch}`);
     }
 
     async getBackendOS(): Promise<OS.Type> {

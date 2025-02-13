@@ -63,13 +63,11 @@ export class TheiaQuickCommandPalette extends TheiaPageObject {
         if (!await this.isOpen()) {
             this.open();
         }
-        const input = await this.page.waitForSelector(`${this.selector} .monaco-inputbox .input`);
-        if (input != null) {
-            await input.focus();
-            await input.type(value, { delay: USER_KEY_TYPING_DELAY });
-            if (confirm) {
-                await this.page.keyboard.press('Enter');
-            }
+        const input = this.page.locator(`${this.selector} .monaco-inputbox .input`);
+        await input.focus();
+        await input.pressSequentially(value, { delay: USER_KEY_TYPING_DELAY });
+        if (confirm) {
+            await this.page.keyboard.press('Enter');
         }
     }
 
@@ -80,4 +78,14 @@ export class TheiaQuickCommandPalette extends TheiaPageObject {
         }
         return command.$('.monaco-list-row.focused .monaco-highlighted-label');
     }
+
+    async visibleItems(): Promise<ElementHandle<SVGElement | HTMLElement>[]> {
+        // FIXME rewrite with locators
+        const command = await this.page.waitForSelector(this.selector);
+        if (!command) {
+            throw new Error('No selected command found!');
+        }
+        return command.$$('.monaco-highlighted-label');
+    }
+
 }

@@ -497,6 +497,9 @@ export class KeybindingRegistry {
 
     isEnabledInScope(binding: common.Keybinding, target: HTMLElement | undefined): boolean {
         const context = binding.context && this.contexts[binding.context];
+        if (binding.command && (!this.isPseudoCommand(binding.command) && !this.commandRegistry.isEnabled(binding.command, binding.args))) {
+            return false;
+        }
         if (context && !context.isEnabled(binding)) {
             return false;
         }
@@ -619,13 +622,13 @@ export class KeybindingRegistry {
     matchKeybinding(keySequence: KeySequence, event?: KeyboardEvent): KeybindingRegistry.Match {
         let disabled: Set<string> | undefined;
         const isEnabled = (binding: ScopedKeybinding) => {
-            if (event && !this.isEnabled(binding, event)) {
-                return false;
-            }
             const { command, context, when, keybinding } = binding;
             if (!this.isUsable(binding)) {
                 disabled = disabled || new Set<string>();
                 disabled.add(JSON.stringify({ command: command.substring(1), context, when, keybinding }));
+                return false;
+            }
+            if (event && !this.isEnabled(binding, event)) {
                 return false;
             }
             return !disabled?.has(JSON.stringify({ command, context, when, keybinding }));

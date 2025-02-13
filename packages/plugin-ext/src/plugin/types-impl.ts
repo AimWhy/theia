@@ -79,7 +79,7 @@ export class URI extends CodeURI implements theia.Uri {
      */
     static override revive(data: UriComponents | CodeURI): URI;
     static override revive(data: UriComponents | CodeURI | null): URI | null;
-    static override revive(data: UriComponents | CodeURI | undefined): URI | undefined
+    static override revive(data: UriComponents | CodeURI | undefined): URI | undefined;
     static override revive(data: UriComponents | CodeURI | undefined | null): URI | undefined | null {
         const uri = CodeURI.revive(data);
         return uri ? new URI(uri) : undefined;
@@ -153,7 +153,8 @@ export enum StatusBarAlignment {
 export enum TextEditorLineNumbersStyle {
     Off = 0,
     On = 1,
-    Relative = 2
+    Relative = 2,
+    Interval = 3
 }
 
 /**
@@ -724,7 +725,7 @@ export class SnippetString {
 
 @es5ClassCompat
 export class ThemeColor {
-    constructor(public id: string) { }
+    constructor(public readonly id: string) { }
 }
 
 @es5ClassCompat
@@ -742,6 +743,9 @@ export class ThemeIcon {
 export namespace ThemeIcon {
     export function is(item: unknown): item is ThemeIcon {
         return isObject(item) && 'id' in item;
+    }
+    export function get(item: unknown): ThemeIcon | undefined {
+        return is(item) ? item : undefined;
     }
 }
 
@@ -881,7 +885,7 @@ export class TextEdit {
 
     protected _range: Range;
     protected _newText: string;
-    protected _newEol: EndOfLine;
+    protected _newEol: EndOfLine | undefined;
 
     get range(): Range {
         return this._range;
@@ -905,7 +909,7 @@ export class TextEdit {
         this._newText = value;
     }
 
-    get newEol(): EndOfLine {
+    get newEol(): EndOfLine | undefined {
         return this._newEol;
     }
 
@@ -1641,16 +1645,36 @@ export class DocumentLink {
 }
 
 @es5ClassCompat
+export class DocumentDropOrPasteEditKind {
+    static readonly Empty: DocumentDropOrPasteEditKind = new DocumentDropOrPasteEditKind('');
+    static readonly Text: DocumentDropOrPasteEditKind = new DocumentDropOrPasteEditKind('text');
+
+    private static sep = '.';
+
+    constructor(
+        public readonly value: string
+    ) { }
+
+    public append(...parts: string[]): DocumentDropOrPasteEditKind {
+        return new DocumentDropOrPasteEditKind((this.value ? [this.value, ...parts] : parts).join(DocumentDropOrPasteEditKind.sep));
+    }
+
+    public intersects(other: DocumentDropOrPasteEditKind): boolean {
+        return this.contains(other) || other.contains(this);
+    }
+
+    public contains(other: DocumentDropOrPasteEditKind): boolean {
+        return this.value === other.value || other.value.startsWith(this.value + DocumentDropOrPasteEditKind.sep);
+    }
+}
+
+@es5ClassCompat
 export class DocumentDropEdit {
-
-    id?: string;
-
-    priority?: number;
-
-    label?: string;
-
+    title?: string;
+    kind: DocumentDropOrPasteEditKind;
+    handledMimeType?: string;
+    yieldTo?: ReadonlyArray<DocumentDropOrPasteEditKind>;
     insertText: string | SnippetString;
-
     additionalEdit?: WorkspaceEdit;
 
     constructor(insertText: string | SnippetString) {
@@ -2063,8 +2087,8 @@ export class TreeItem {
         readonly accessibilityInformation?: AccessibilityInformation
     };
 
-    constructor(label: string | theia.TreeItemLabel, collapsibleState?: theia.TreeItemCollapsibleState)
-    constructor(resourceUri: URI, collapsibleState?: theia.TreeItemCollapsibleState)
+    constructor(label: string | theia.TreeItemLabel, collapsibleState?: theia.TreeItemCollapsibleState);
+    constructor(resourceUri: URI, collapsibleState?: theia.TreeItemCollapsibleState);
     constructor(arg1: string | theia.TreeItemLabel | URI, public collapsibleState: theia.TreeItemCollapsibleState = TreeItemCollapsibleState.None) {
         if (arg1 instanceof URI) {
             this.resourceUri = arg1;
@@ -3008,6 +3032,14 @@ export class FunctionBreakpoint extends Breakpoint {
     }
 }
 
+export class DebugThread implements theia.DebugThread {
+    constructor(readonly session: theia.DebugSession, readonly threadId: number) { }
+}
+
+export class DebugStackFrame implements theia.DebugStackFrame {
+    constructor(readonly session: theia.DebugSession, readonly threadId: number, readonly frameId: number) { }
+}
+
 @es5ClassCompat
 export class Color {
     readonly red: number;
@@ -3309,6 +3341,7 @@ export class TestRunRequest implements theia.TestRunRequest {
         public readonly exclude: theia.TestItem[] | undefined = undefined,
         public readonly profile: theia.TestRunProfile | undefined = undefined,
         public readonly continuous: boolean | undefined = undefined,
+        public readonly preserveFocus: boolean = true
     ) { }
 }
 
@@ -3318,6 +3351,7 @@ export class TestMessage implements theia.TestMessage {
     public actualOutput?: string;
     public location?: theia.Location;
     public contextValue?: string;
+    public stackTrace?: theia.TestMessageStackFrame[] | undefined;
 
     public static diff(message: string | theia.MarkdownString, expected: string, actual: string): theia.TestMessage {
         const msg = new TestMessage(message);
@@ -3328,6 +3362,81 @@ export class TestMessage implements theia.TestMessage {
 
     constructor(public message: string | theia.MarkdownString) { }
 }
+
+@es5ClassCompat
+export class TestCoverageCount {
+    constructor(public covered: number, public total: number) { }
+}
+
+export class TestMessageStackFrame implements theia.TestMessageStackFrame {
+    constructor(
+        public label: string,
+        public uri?: theia.Uri,
+        public position?: Position
+    ) { }
+}
+
+@es5ClassCompat
+export class FileCoverage {
+
+    detailedCoverage?: theia.FileCoverageDetail[];
+
+    static fromDetails(uri: theia.Uri, details: theia.FileCoverageDetail[]): FileCoverage {
+        const statements = new TestCoverageCount(0, 0);
+        const branches = new TestCoverageCount(0, 0);
+        const decl = new TestCoverageCount(0, 0);
+
+        for (const detail of details) {
+            if (detail instanceof StatementCoverage) {
+                statements.total += 1;
+                statements.covered += detail.executed ? 1 : 0;
+
+                for (const branch of detail.branches) {
+                    branches.total += 1;
+                    branches.covered += branch.executed ? 1 : 0;
+                }
+            } else {
+                decl.total += 1;
+                decl.covered += detail.executed ? 1 : 0;
+            }
+        }
+
+        const coverage = new FileCoverage(
+            uri,
+            statements,
+            branches.total > 0 ? branches : undefined,
+            decl.total > 0 ? decl : undefined,
+        );
+
+        coverage.detailedCoverage = details;
+
+        return coverage;
+    }
+
+    constructor(
+        public uri: theia.Uri,
+        public statementCoverage: TestCoverageCount,
+        public branchCoverage?: TestCoverageCount,
+        public declarationCoverage?: TestCoverageCount,
+        public includesTests?: theia.TestItem[],
+    ) { }
+}
+
+@es5ClassCompat
+export class StatementCoverage implements theia.StatementCoverage {
+    constructor(public executed: number | boolean, public location: Position | Range, public branches: BranchCoverage[] = []) { }
+}
+
+export class BranchCoverage implements theia.BranchCoverage {
+    constructor(public executed: number | boolean, public location?: Position | Range, public label?: string) { }
+}
+
+@es5ClassCompat
+export class DeclarationCoverage implements theia.DeclarationCoverage {
+    constructor(public name: string, public executed: number | boolean, public location: Position | Range) { }
+}
+
+export type FileCoverageDetail = StatementCoverage | DeclarationCoverage;
 
 @es5ClassCompat
 export class TimelineItem {
@@ -3673,19 +3782,57 @@ export class InteractiveWindowInput {
 // #endregion
 
 // #region DocumentPaste
+export class DocumentPasteEditKind {
+    static Empty: DocumentPasteEditKind;
+
+    constructor(public readonly value: string) { }
+
+    /** @stubbed */
+    append(...parts: string[]): CodeActionKind {
+        return CodeActionKind.Empty;
+    };
+
+    /** @stubbed */
+    intersects(other: CodeActionKind): boolean {
+        return false;
+    }
+
+    /** @stubbed */
+    contains(other: CodeActionKind): boolean {
+        return false;
+    }
+}
+DocumentPasteEditKind.Empty = new DocumentPasteEditKind('');
+
 @es5ClassCompat
 export class DocumentPasteEdit {
-    constructor(insertText: string | SnippetString, id: string, label: string) {
+    constructor(insertText: string | SnippetString, title: string, kind: DocumentDropOrPasteEditKind) {
         this.insertText = insertText;
-        this.id = id;
-        this.label = label;
+        this.title = title;
+        this.kind = kind;
     }
+    title: string;
+    kind: DocumentDropOrPasteEditKind;
     insertText: string | SnippetString;
     additionalEdit?: WorkspaceEdit;
-    id: string;
-    label: string;
-    priority?: number;
+    yieldTo?: ReadonlyArray<DocumentDropOrPasteEditKind>;
 }
+
+/**
+ * The reason why paste edits were requested.
+ */
+export enum DocumentPasteTriggerKind {
+    /**
+     * Pasting was requested as part of a normal paste operation.
+     */
+    Automatic = 0,
+
+    /**
+     * Pasting was requested by the user with the `paste as` command.
+     */
+    PasteAs = 1,
+}
+
 // #endregion
 
 // #region DocumentPaste
@@ -3693,6 +3840,33 @@ export enum EditSessionIdentityMatch {
     Complete = 100,
     Partial = 50,
     None = 0
+}
+// #endregion
+
+// #region terminalCompletionProvider
+export class TerminalCompletionList<T extends theia.TerminalCompletionItem> {
+
+    resourceRequestConfig?: theia.TerminalResourceRequestConfig;
+
+    items: T[];
+
+    /**
+     * Creates a new completion list.
+     *
+     * @param items The completion items.
+     * @param resourceRequestConfig Indicates which resources should be shown as completions for the cwd of the terminal.
+     * @stubbed
+     */
+    constructor(items?: T[], resourceRequestConfig?: theia.TerminalResourceRequestConfig) {
+    }
+}
+
+export enum TerminalCompletionItemKind {
+    File = 0,
+    Folder = 1,
+    Flag = 2,
+    Method = 3,
+    Argument = 4
 }
 // #endregion
 
@@ -3722,3 +3896,238 @@ export class TerminalQuickFixOpener {
     constructor(uri: theia.Uri) { }
 }
 
+// #region Chat
+
+/**
+ * @stubbed
+ */
+export class ChatRequestTurn {
+    readonly prompt: string;
+    readonly participant: string;
+    readonly command?: string;
+    readonly references: theia.ChatPromptReference[];
+    readonly toolReferences: readonly theia.ChatLanguageModelToolReference[];
+    private constructor(prompt: string, command: string | undefined, references: theia.ChatPromptReference[], participant: string,
+        toolReferences: theia.ChatLanguageModelToolReference[]) {
+        this.prompt = prompt;
+        this.command = command;
+        this.participant = participant;
+        this.references = references;
+        this.toolReferences = toolReferences;
+    };
+}
+
+/**
+ * @stubbed
+ */
+export class ChatResponseTurn {
+    readonly command?: string;
+
+    private constructor(readonly response: ReadonlyArray<theia.ChatResponseMarkdownPart | theia.ChatResponseFileTreePart | theia.ChatResponseAnchorPart
+        | theia.ChatResponseCommandButtonPart>, readonly result: theia.ChatResult, readonly participant: string) { }
+}
+
+/**
+ * @stubbed
+ */
+export class ChatResponseAnchorPart {
+    value: URI | Location;
+    title?: string;
+
+    constructor(value: URI | Location, title?: string) { }
+}
+
+/**
+ * @stubbed
+ */
+export class ChatResponseProgressPart {
+    value: string;
+
+    constructor(value: string) { }
+}
+
+/**
+ * @stubbed
+ */
+export class ChatResponseReferencePart {
+    value: URI | Location;
+    iconPath?: URI | ThemeIcon | { light: URI; dark: URI; };
+
+    constructor(value: URI | theia.Location, iconPath?: URI | ThemeIcon | {
+        light: URI;
+        dark: URI;
+    }) { }
+}
+
+/**
+ * @stubbed
+ */
+export class ChatResponseCommandButtonPart {
+    value: theia.Command;
+
+    constructor(value: theia.Command) { }
+}
+
+/**
+ * @stubbed
+ */
+export class ChatResponseMarkdownPart {
+    value: theia.MarkdownString;
+
+    constructor(value: string | theia.MarkdownString) {
+    }
+}
+
+/**
+ * @stubbed
+ */
+export class ChatResponseFileTreePart {
+    value: theia.ChatResponseFileTree[];
+    baseUri: URI;
+
+    constructor(value: theia.ChatResponseFileTree[], baseUri: URI) { }
+}
+
+export type ChatResponsePart = ChatResponseMarkdownPart | ChatResponseFileTreePart | ChatResponseAnchorPart
+    | ChatResponseProgressPart | ChatResponseReferencePart | ChatResponseCommandButtonPart;
+
+export enum ChatResultFeedbackKind {
+    Unhelpful = 0,
+    Helpful = 1,
+}
+
+export enum LanguageModelChatMessageRole {
+    User = 1,
+    Assistant = 2
+}
+
+/**
+ * @stubbed
+ */
+export class LanguageModelChatMessage {
+    static User(content: string | (LanguageModelTextPart | LanguageModelToolResultPart)[], name?: string): LanguageModelChatMessage {
+        return new LanguageModelChatMessage(LanguageModelChatMessageRole.User, content, name);
+    }
+
+    static Assistant(content: string | (LanguageModelTextPart | LanguageModelToolResultPart)[], name?: string): LanguageModelChatMessage {
+        return new LanguageModelChatMessage(LanguageModelChatMessageRole.Assistant, content, name);
+    }
+
+    constructor(public role: LanguageModelChatMessageRole, public content: string | (LanguageModelTextPart | LanguageModelToolResultPart | LanguageModelToolCallPart)[],
+        public name?: string) { }
+}
+
+export class LanguageModelError extends Error {
+
+    static NoPermissions(message?: string): LanguageModelError {
+        return new LanguageModelError(message, LanguageModelError.NoPermissions.name);
+    }
+
+    static Blocked(message?: string): LanguageModelError {
+        return new LanguageModelError(message, LanguageModelError.Blocked.name);
+    }
+
+    static NotFound(message?: string): LanguageModelError {
+        return new LanguageModelError(message, LanguageModelError.NotFound.name);
+    }
+
+    readonly code: string;
+
+    constructor(message?: string, code?: string) {
+        super(message);
+        this.name = 'LanguageModelError';
+        this.code = code ?? '';
+    }
+}
+
+export enum LanguageModelChatToolMode {
+    Auto = 1,
+    Required = 2
+}
+
+/**
+ * @stubbed
+ */
+export class LanguageModelToolCallPart {
+    callId: string;
+    name: string;
+    input: object;
+
+    constructor(callId: string, name: string, input: object) { }
+}
+
+/**
+ * @stubbed
+ */
+export class LanguageModelToolResultPart {
+    callId: string;
+    content: (theia.LanguageModelTextPart | theia.LanguageModelPromptTsxPart | unknown)[];
+
+    constructor(callId: string, content: (theia.LanguageModelTextPart | theia.LanguageModelPromptTsxPart | unknown)[]) { }
+}
+
+/**
+ * @stubbed
+ */
+export class LanguageModelTextPart {
+    value: string;
+    constructor(value: string) { }
+}
+
+/**
+ * @stubbed
+ */
+export class LanguageModelToolResult {
+    content: (theia.LanguageModelTextPart | theia.LanguageModelPromptTsxPart | unknown)[];
+
+    constructor(content: (theia.LanguageModelTextPart | theia.LanguageModelPromptTsxPart)[]) { }
+}
+
+/**
+ * @stubbed
+ */
+export class LanguageModelPromptTsxPart {
+    value: unknown;
+
+    constructor(value: unknown) { }
+}
+// #endregion
+
+// #region Port Attributes
+
+export enum PortAutoForwardAction {
+    Notify = 1,
+    OpenBrowser = 2,
+    OpenPreview = 3,
+    Silent = 4,
+    Ignore = 5
+}
+
+export class PortAttributes {
+    constructor(public autoForwardAction: PortAutoForwardAction) {
+    }
+}
+
+// #endregion
+
+// #region Debug Visualization
+
+export class DebugVisualization {
+    iconPath?: URI | { light: URI; dark: URI } | ThemeIcon;
+    visualization?: theia.Command | { treeId: string };
+
+    constructor(public name: string) {
+    }
+}
+
+// #endregion
+
+// #region Terminal Shell Integration
+
+export enum TerminalShellExecutionCommandLineConfidence {
+    Low = 0,
+    Medium = 1,
+    High = 2
+}
+
+// #endregion

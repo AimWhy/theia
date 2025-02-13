@@ -20,11 +20,11 @@
 
 import {
     CellExecuteUpdateDto, NotebookKernelDto, NotebookKernelsExt, NotebookKernelsMain,
-    NotebookKernelSourceActionDto, NotebookOutputDto, PluginModel, PluginPackage, PLUGIN_RPC_CONTEXT
+    NotebookKernelSourceActionDto, NotebookOutputDto, PluginModel, PLUGIN_RPC_CONTEXT
 } from '../../common';
 import { RPCProtocol } from '../../common/rpc-protocol';
 import { UriComponents } from '../../common/uri-components';
-import { CancellationTokenSource, Disposable, DisposableCollection, Emitter, Path } from '@theia/core';
+import { CancellationTokenSource, Disposable, DisposableCollection, Emitter } from '@theia/core';
 import { Cell } from './notebook-document';
 import { NotebooksExtImpl } from './notebooks';
 import { NotebookCellOutputConverter, NotebookCellOutputItem, NotebookKernelSourceAction } from '../type-converters';
@@ -34,6 +34,9 @@ import { CommandRegistryImpl } from '../command-registry';
 import { NotebookCellOutput, NotebookRendererScript, URI } from '../types-impl';
 import { toUriComponents } from '../../main/browser/hierarchy/hierarchy-types-converters';
 import type * as theia from '@theia/plugin';
+import { WebviewsExtImpl } from '../webviews';
+import { WorkspaceExtImpl } from '../workspace';
+import { PluginLogger } from '../logger';
 
 interface KernelData {
     extensionId: string;
@@ -51,6 +54,8 @@ export class NotebookKernelsExtImpl implements NotebookKernelsExt {
 
     private readonly proxy: NotebookKernelsMain;
 
+    private readonly logger: PluginLogger;
+
     private kernelDetectionTasks = new Map<number, theia.NotebookControllerDetectionTask>();
     private currentKernelDetectionTaskHandle = 0;
 
@@ -64,8 +69,22 @@ export class NotebookKernelsExtImpl implements NotebookKernelsExt {
         rpc: RPCProtocol,
         private readonly notebooks: NotebooksExtImpl,
         private readonly commands: CommandRegistryImpl,
+        private readonly webviews: WebviewsExtImpl,
+        workspace: WorkspaceExtImpl
     ) {
         this.proxy = rpc.getProxy(PLUGIN_RPC_CONTEXT.NOTEBOOK_KERNELS_MAIN);
+        this.logger = new PluginLogger(rpc, 'notebook');
+
+        // call onDidChangeSelection for all kernels after trust is granted to inform extensions they can set the kernel as assoiciated
+        // the jupyter extension for example does not set kernel association after trust is granted
+        workspace.onDidGrantWorkspaceTrust(() => {
+            this.kernelData.forEach(kernel => {
+                kernel.associatedNotebooks.forEach(async (_, uri) => {
+                    const notebook = await this.notebooks.waitForNotebookDocument(URI.parse(uri));
+                    kernel.onDidChangeSelection.fire({ selected: true, notebook: notebook.apiNotebook });
+                });
+            });
+        });
     }
 
     private currentHandle = 0;
@@ -82,9 +101,9 @@ export class NotebookKernelsExtImpl implements NotebookKernelsExt {
         const handle = this.currentHandle++;
         const that = this;
 
-        console.debug(`NotebookController[${handle}], CREATED by ${extension.id}, ${id}`);
+        this.logger.debug(`NotebookController[${handle}], CREATED by ${extension.id}, ${id}`);
 
-        const defaultExecuteHandler = () => console.warn(`NO execute handler from notebook controller '${data.id}' of extension: '${extension.id}'`);
+        const defaultExecuteHandler = () => this.logger.warn(`NO execute handler from notebook controller '${data.id}' of extension: '${extension.id}'`);
 
         let isDisposed = false;
         const commandDisposables = new DisposableCollection();
@@ -107,7 +126,7 @@ export class NotebookKernelsExtImpl implements NotebookKernelsExt {
 
         this.proxy.$addKernel(handle, data).catch(err => {
             // this can happen when a kernel with that ID is already registered
-            console.log(err);
+            this.logger.info(err);
             isDisposed = true;
         });
 
@@ -191,7 +210,7 @@ export class NotebookKernelsExtImpl implements NotebookKernelsExt {
                     throw new Error('notebook controller is DISPOSED');
                 }
                 if (!associatedNotebooks.has(cell.notebook.uri.toString())) {
-                    console.debug(`NotebookController[${handle}] NOT associated to notebook, associated to THESE notebooks:`,
+                    that.logger.debug(`NotebookController[${handle}] NOT associated to notebook, associated to THESE notebooks:`,
                         Array.from(associatedNotebooks.keys()).map(u => u.toString()));
                     throw new Error(`notebook controller is NOT associated to notebook: ${cell.notebook.uri.toString()}`);
                 }
@@ -199,7 +218,7 @@ export class NotebookKernelsExtImpl implements NotebookKernelsExt {
             },
             dispose: () => {
                 if (!isDisposed) {
-                    console.debug(`NotebookController[${handle}], DISPOSED`);
+                    that.logger.debug(`NotebookController[${handle}] DISPOSED`);
                     isDisposed = true;
                     this.kernelData.delete(handle);
                     commandDisposables.dispose();
@@ -216,8 +235,7 @@ export class NotebookKernelsExtImpl implements NotebookKernelsExt {
                 return that.proxy.$postMessage(handle, 'notebook:' + editor?.notebook.uri.toString(), message);
             },
             asWebviewUri(localResource: theia.Uri): theia.Uri {
-                const basePath = PluginPackage.toPluginUrl(extension, '');
-                return URI.from({ path: new Path(basePath).join(localResource.path).toString(), scheme: 'https' });
+                return that.webviews.toGeneralWebviewResource(extension, localResource);
             }
         };
 
@@ -243,7 +261,7 @@ export class NotebookKernelsExtImpl implements NotebookKernelsExt {
         if (this.activeExecutions.has(cellObj.uri.toString())) {
             throw new Error(`duplicate execution for ${cellObj.uri}`);
         }
-        const execution = new NotebookCellExecutionTask(controllerId, cellObj, this.proxy);
+        const execution = new NotebookCellExecutionTask(controllerId, cellObj, this.proxy, this.logger);
         this.activeExecutions.set(cellObj.uri.toString(), execution);
         const listener = execution.onDidChangeState(() => {
             if (execution.state === NotebookCellExecutionTaskState.Resolved) {
@@ -294,20 +312,20 @@ export class NotebookKernelsExtImpl implements NotebookKernelsExt {
         };
     }
 
-    async $acceptNotebookAssociation(handle: number, uri: UriComponents, value: boolean): Promise<void> {
+    async $acceptNotebookAssociation(handle: number, uri: UriComponents, selected: boolean): Promise<void> {
         const obj = this.kernelData.get(handle);
         if (obj) {
             // update data structure
             const notebook = await this.notebooks.waitForNotebookDocument(URI.from(uri));
-            if (value) {
+            if (selected) {
                 obj.associatedNotebooks.set(notebook.uri.toString(), true);
             } else {
                 obj.associatedNotebooks.delete(notebook.uri.toString());
             }
-            console.debug(`NotebookController[${handle}] ASSOCIATE notebook`, notebook.uri.toString(), value);
+            this.logger.debug(`NotebookController[${handle}] ASSOCIATE notebook`, notebook.uri.toString(), selected);
             // send event
             obj.onDidChangeSelection.fire({
-                selected: value,
+                selected: selected,
                 notebook: notebook.apiNotebook
             });
         }
@@ -330,10 +348,13 @@ export class NotebookKernelsExtImpl implements NotebookKernelsExt {
         }
 
         try {
-            console.debug(`NotebookController[${handle}] EXECUTE cells`, document.uri.toString(), cells.length);
+            this.logger.debug(`NotebookController[${handle}] EXECUTE cells`, {
+                notebook: document.uri.toString(),
+                cells: cells.map(e => e.index)
+            });
             await obj.controller.executeHandler.call(obj.controller, cells, document.apiNotebook, obj.controller);
         } catch (err) {
-            console.error(`NotebookController[${handle}] execute cells FAILED`, err);
+            this.logger.error(`NotebookController[${handle}] EXECUTE cells FAILED`, err);
         }
 
     }
@@ -414,12 +435,14 @@ class NotebookCellExecutionTask implements Disposable {
     constructor(
         controllerId: string,
         private readonly cell: Cell,
-        private readonly proxy: NotebookKernelsMain
+        private readonly proxy: NotebookKernelsMain,
+        private readonly logger: PluginLogger
     ) {
         this.collector = new TimeoutBasedCollector(10, updates => this.update(updates));
 
         this.executionOrder = cell.internalMetadata.executionOrder;
         this.proxy.$createExecution(this._handle, controllerId, this.cell.notebookDocument.uri, this.cell.handle);
+        this.logger.debug(`NotebookCellExecutionTask[${this._handle}] CREATED`, { controllerId, cell: this.cell.uri.toString() });
     }
 
     cancel(): void {
@@ -473,18 +496,21 @@ class NotebookCellExecutionTask implements Disposable {
     private async updateOutputs(outputs: NotebookCellOutput | NotebookCellOutput[], cell: theia.NotebookCell | undefined, append: boolean): Promise<void> {
         const handle = this.cellIndexToHandle(cell);
         const outputDtos = this.validateAndConvertOutputs(Array.isArray(outputs) ? outputs : [outputs]);
+        this.logger.debug(`NotebookCellExecutionTask[${this._handle}] received new outputs from plugin`, { append, outputs: outputDtos });
         return this.updateSoon(
             {
                 editType: CellExecutionUpdateType.Output,
                 cellHandle: handle,
                 append,
                 outputs: outputDtos
-            });
+            }
+        );
     }
 
     private async updateOutputItems(items: theia.NotebookCellOutputItem | theia.NotebookCellOutputItem[],
         output: theia.NotebookCellOutput, append: boolean): Promise<void> {
         items = NotebookCellOutputConverter.ensureUniqueMimeTypes(Array.isArray(items) ? items : [items], true);
+        this.logger.debug(`NotebookCellExecutionTask[${this._handle}] received new outputs from plugin`, { append, items });
         return this.updateSoon({
             editType: CellExecutionUpdateType.OutputItems,
             items: items.map(NotebookCellOutputItem.from),

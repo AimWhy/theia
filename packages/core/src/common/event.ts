@@ -89,6 +89,12 @@ export namespace Event {
         return new Promise(resolve => once(event)(resolve));
     }
 
+    export function filter<T>(event: Event<T>, predicate: (e: T) => unknown): Event<T>;
+    export function filter<T, S extends T>(event: Event<T>, predicate: (e: T) => e is S): Event<S>;
+    export function filter<T>(event: Event<T>, predicate: (e: T) => unknown): Event<T> {
+        return (listener, thisArg, disposables) => event(e => predicate(e) && listener.call(thisArg, e), undefined, disposables);
+    }
+
     /**
      * Given an event and a `map` function, returns another event which maps each element
      * through the mapping function.
@@ -464,6 +470,24 @@ export class AsyncEmitter<T extends WaitUntilEvent> extends Emitter<T> {
                 console.error(e);
             }
         }
+    }
+
+}
+
+export class QueueableEmitter<T> extends Emitter<T[]> {
+
+    currentQueue?: T[];
+
+    queue(...arg: T[]): void {
+        if (!this.currentQueue) {
+            this.currentQueue = [];
+        }
+        this.currentQueue.push(...arg);
+    }
+
+    override fire(): void {
+        super.fire(this.currentQueue || []);
+        this.currentQueue = undefined;
     }
 
 }

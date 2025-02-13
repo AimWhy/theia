@@ -216,8 +216,8 @@ export interface TextEditor extends Disposable, TextEditorSelection, Navigatable
     cursor: Position;
     readonly onCursorPositionChanged: Event<Position>;
 
-    selection: Range;
-    readonly onSelectionChanged: Event<Range>;
+    selection: Selection;
+    readonly onSelectionChanged: Event<Selection>;
 
     /**
      * The text editor should be revealed,
@@ -293,6 +293,12 @@ export interface TextEditor extends Disposable, TextEditorSelection, Navigatable
     setEncoding(encoding: string, mode: EncodingMode): void;
 
     readonly onEncodingChanged: Event<string>;
+
+    shouldDisplayDirtyDiff(): boolean;
+}
+
+export interface Selection extends Range {
+    direction: 'ltr' | 'rtl';
 }
 
 export interface Dimension {

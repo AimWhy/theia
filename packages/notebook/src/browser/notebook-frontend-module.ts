@@ -16,7 +16,9 @@
 import '../../src/browser/style/index.css';
 
 import { ContainerModule } from '@theia/core/shared/inversify';
-import { OpenHandler, WidgetFactory } from '@theia/core/lib/browser';
+import {
+    FrontendApplicationContribution, KeybindingContribution, LabelProviderContribution, OpenHandler, UndoRedoHandler, WidgetFactory, WidgetStatusBarContribution
+} from '@theia/core/lib/browser';
 import { ColorContribution } from '@theia/core/lib/browser/color-application-contribution';
 import { NotebookOpenHandler } from './notebook-open-handler';
 import { CommandContribution, MenuContribution, ResourceResolver, } from '@theia/core';
@@ -24,15 +26,12 @@ import { NotebookTypeRegistry } from './notebook-type-registry';
 import { NotebookRendererRegistry } from './notebook-renderer-registry';
 import { NotebookService } from './service/notebook-service';
 import { NotebookEditorWidgetFactory } from './notebook-editor-widget-factory';
-import { NotebookCellResourceResolver } from './notebook-cell-resource-resolver';
+import { NotebookCellResourceResolver, NotebookOutputResourceResolver } from './notebook-cell-resource-resolver';
 import { NotebookModelResolverService } from './service/notebook-model-resolver-service';
 import { NotebookCellActionContribution } from './contributions/notebook-cell-actions-contribution';
-import { NotebookCellToolbarFactory } from './view/notebook-cell-toolbar-factory';
-import { createNotebookModelContainer, NotebookModel, NotebookModelFactory, NotebookModelProps } from './view-model/notebook-model';
+import { createNotebookModelContainer, NotebookModel, NotebookModelFactory, NotebookModelProps, NotebookModelResolverServiceProxy } from './view-model/notebook-model';
 import { createNotebookCellModelContainer, NotebookCellModel, NotebookCellModelFactory, NotebookCellModelProps } from './view-model/notebook-cell-model';
 import { createNotebookEditorWidgetContainer, NotebookEditorWidgetContainerFactory, NotebookEditorProps, NotebookEditorWidget } from './notebook-editor-widget';
-import { NotebookCodeCellRenderer } from './view/notebook-code-cell-view';
-import { NotebookMarkdownCellRenderer } from './view/notebook-markdown-cell-view';
 import { NotebookActionsContribution } from './contributions/notebook-actions-contribution';
 import { NotebookExecutionService } from './service/notebook-execution-service';
 import { NotebookExecutionStateService } from './service/notebook-execution-state-service';
@@ -42,10 +41,19 @@ import { NotebookKernelHistoryService } from './service/notebook-kernel-history-
 import { NotebookEditorWidgetService } from './service/notebook-editor-widget-service';
 import { NotebookRendererMessagingService } from './service/notebook-renderer-messaging-service';
 import { NotebookColorContribution } from './contributions/notebook-color-contribution';
-import { NotebookCellContextManager } from './service/notebook-cell-context-manager';
-import { NotebookMainToolbarRenderer } from './view/notebook-main-toolbar';
+import { NotebookMonacoTextModelService } from './service/notebook-monaco-text-model-service';
+import { NotebookOutlineContribution } from './contributions/notebook-outline-contribution';
+import { NotebookLabelProviderContribution } from './contributions/notebook-label-provider-contribution';
+import { NotebookOutputActionContribution } from './contributions/notebook-output-action-contribution';
+import { NotebookClipboardService } from './service/notebook-clipboard-service';
+import { bindNotebookPreferences } from './contributions/notebook-preferences';
+import { NotebookOptionsService } from './service/notebook-options';
+import { NotebookUndoRedoHandler } from './contributions/notebook-undo-redo-handler';
+import { NotebookStatusBarContribution } from './contributions/notebook-status-bar-contribution';
+import { NotebookCellEditorService } from './service/notebook-cell-editor-service';
+import { NotebookCellStatusBarService } from './service/notebook-cell-status-bar-service';
 
-export default new ContainerModule(bind => {
+export default new ContainerModule((bind, unbind, isBound, rebind) => {
     bind(NotebookColorContribution).toSelf().inSingletonScope();
     bind(ColorContribution).toService(NotebookColorContribution);
 
@@ -56,7 +64,6 @@ export default new ContainerModule(bind => {
     bind(NotebookRendererRegistry).toSelf().inSingletonScope();
 
     bind(WidgetFactory).to(NotebookEditorWidgetFactory).inSingletonScope();
-    bind(NotebookCellToolbarFactory).toSelf().inSingletonScope();
 
     bind(NotebookService).toSelf().inSingletonScope();
     bind(NotebookEditorWidgetService).toSelf().inSingletonScope();
@@ -66,22 +73,29 @@ export default new ContainerModule(bind => {
     bind(NotebookRendererMessagingService).toSelf().inSingletonScope();
     bind(NotebookKernelHistoryService).toSelf().inSingletonScope();
     bind(NotebookKernelQuickPickService).toSelf().inSingletonScope();
+    bind(NotebookClipboardService).toSelf().inSingletonScope();
+    bind(NotebookCellEditorService).toSelf().inSingletonScope();
+    bind(NotebookCellStatusBarService).toSelf().inSingletonScope();
 
     bind(NotebookCellResourceResolver).toSelf().inSingletonScope();
     bind(ResourceResolver).toService(NotebookCellResourceResolver);
     bind(NotebookModelResolverService).toSelf().inSingletonScope();
+    bind(NotebookModelResolverServiceProxy).toService(NotebookModelResolverService);
+    bind(NotebookOutputResourceResolver).toSelf().inSingletonScope();
+    bind(ResourceResolver).toService(NotebookOutputResourceResolver);
 
     bind(NotebookCellActionContribution).toSelf().inSingletonScope();
     bind(MenuContribution).toService(NotebookCellActionContribution);
     bind(CommandContribution).toService(NotebookCellActionContribution);
+    bind(KeybindingContribution).toService(NotebookCellActionContribution);
 
     bind(NotebookActionsContribution).toSelf().inSingletonScope();
     bind(CommandContribution).toService(NotebookActionsContribution);
     bind(MenuContribution).toService(NotebookActionsContribution);
+    bind(KeybindingContribution).toService(NotebookActionsContribution);
 
-    bind(NotebookCodeCellRenderer).toSelf().inSingletonScope();
-    bind(NotebookMarkdownCellRenderer).toSelf().inSingletonScope();
-    bind(NotebookMainToolbarRenderer).toSelf().inSingletonScope();
+    bind(NotebookOutputActionContribution).toSelf().inSingletonScope();
+    bind(CommandContribution).toService(NotebookOutputActionContribution);
 
     bind(NotebookEditorWidgetContainerFactory).toFactory(ctx => (props: NotebookEditorProps) =>
         createNotebookEditorWidgetContainer(ctx.container, props).get(NotebookEditorWidget)
@@ -90,6 +104,22 @@ export default new ContainerModule(bind => {
         createNotebookModelContainer(ctx.container, props).get(NotebookModel)
     );
     bind(NotebookCellModelFactory).toFactory(ctx => (props: NotebookCellModelProps) =>
-        createNotebookCellModelContainer(ctx.container, props, NotebookCellContextManager).get(NotebookCellModel)
+        createNotebookCellModelContainer(ctx.container, props).get(NotebookCellModel)
     );
+
+    bind(NotebookMonacoTextModelService).toSelf().inSingletonScope();
+
+    bind(NotebookOutlineContribution).toSelf().inSingletonScope();
+    bind(FrontendApplicationContribution).toService(NotebookOutlineContribution);
+    bind(NotebookLabelProviderContribution).toSelf().inSingletonScope();
+    bind(LabelProviderContribution).toService(NotebookLabelProviderContribution);
+
+    bindNotebookPreferences(bind);
+    bind(NotebookOptionsService).toSelf().inSingletonScope();
+
+    bind(NotebookUndoRedoHandler).toSelf().inSingletonScope();
+    bind(UndoRedoHandler).toService(NotebookUndoRedoHandler);
+
+    bind(NotebookStatusBarContribution).toSelf().inSingletonScope();
+    bind(WidgetStatusBarContribution).toService(NotebookStatusBarContribution);
 });

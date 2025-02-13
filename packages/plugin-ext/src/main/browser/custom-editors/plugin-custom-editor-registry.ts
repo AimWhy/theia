@@ -15,22 +15,19 @@
 // *****************************************************************************
 
 import { injectable, inject, postConstruct } from '@theia/core/shared/inversify';
-import { CustomEditor } from '../../../common';
+import { CustomEditor, DeployedPlugin } from '../../../common';
 import { Disposable, DisposableCollection } from '@theia/core/lib/common/disposable';
+import { Deferred } from '@theia/core/lib/common/promise-util';
 import { CustomEditorOpener } from './custom-editor-opener';
-import { WorkspaceCommands } from '@theia/workspace/lib/browser';
-import { CommandRegistry, Emitter, MenuModelRegistry } from '@theia/core';
-import { SelectionService } from '@theia/core/lib/common';
-import { UriAwareCommandHandler } from '@theia/core/lib/common/uri-command-handler';
-import { NavigatorContextMenu } from '@theia/navigator/lib//browser/navigator-contribution';
-import { ApplicationShell, DefaultOpenerService, WidgetManager, WidgetOpenerOptions } from '@theia/core/lib/browser';
+import { Emitter } from '@theia/core';
+import { ApplicationShell, DefaultOpenerService, OpenWithService, PreferenceService, WidgetManager } from '@theia/core/lib/browser';
 import { CustomEditorWidget } from './custom-editor-widget';
 
 @injectable()
 export class PluginCustomEditorRegistry {
     private readonly editors = new Map<string, CustomEditor>();
-    private readonly pendingEditors = new Set<CustomEditorWidget>();
-    private readonly resolvers = new Map<string, (widget: CustomEditorWidget, options?: WidgetOpenerOptions) => void>();
+    private readonly pendingEditors = new Map<CustomEditorWidget, { deferred: Deferred<void>, disposable: Disposable }>();
+    private readonly resolvers = new Map<string, (widget: CustomEditorWidget) => Promise<void>>();
 
     private readonly onWillOpenCustomEditorEmitter = new Emitter<string>();
     readonly onWillOpenCustomEditor = this.onWillOpenCustomEditorEmitter.event;
@@ -38,20 +35,17 @@ export class PluginCustomEditorRegistry {
     @inject(DefaultOpenerService)
     protected readonly defaultOpenerService: DefaultOpenerService;
 
-    @inject(MenuModelRegistry)
-    protected readonly menuModelRegistry: MenuModelRegistry;
-
-    @inject(CommandRegistry)
-    protected readonly commandRegistry: CommandRegistry;
-
-    @inject(SelectionService)
-    protected readonly selectionService: SelectionService;
-
     @inject(WidgetManager)
     protected readonly widgetManager: WidgetManager;
 
     @inject(ApplicationShell)
     protected readonly shell: ApplicationShell;
+
+    @inject(OpenWithService)
+    protected readonly openWithService: OpenWithService;
+
+    @inject(PreferenceService)
+    protected readonly preferenceService: PreferenceService;
 
     @postConstruct()
     protected init(): void {
@@ -71,7 +65,7 @@ export class PluginCustomEditorRegistry {
         });
     }
 
-    registerCustomEditor(editor: CustomEditor): Disposable {
+    registerCustomEditor(editor: CustomEditor, plugin: DeployedPlugin): Disposable {
         if (this.editors.has(editor.viewType)) {
             console.warn('editor with such id already registered: ', JSON.stringify(editor));
             return Disposable.NULL;
@@ -84,54 +78,44 @@ export class PluginCustomEditorRegistry {
         const editorOpenHandler = new CustomEditorOpener(
             editor,
             this.shell,
-            this.widgetManager
+            this.widgetManager,
+            this,
+            this.preferenceService
         );
         toDispose.push(this.defaultOpenerService.addHandler(editorOpenHandler));
-
-        const openWithCommand = WorkspaceCommands.FILE_OPEN_WITH(editorOpenHandler);
         toDispose.push(
-            this.menuModelRegistry.registerMenuAction(
-                NavigatorContextMenu.OPEN_WITH,
-                {
-                    commandId: openWithCommand.id,
-                    label: editorOpenHandler.label
-                }
-            )
-        );
-        toDispose.push(
-            this.commandRegistry.registerCommand(
-                openWithCommand,
-                UriAwareCommandHandler.MonoSelect(this.selectionService, {
-                    execute: uri => editorOpenHandler.open(uri),
-                    isEnabled: uri => editorOpenHandler.canHandle(uri) > 0,
-                    isVisible: uri => editorOpenHandler.canHandle(uri) > 0
-                })
-            )
-        );
-        toDispose.push(
-            editorOpenHandler.onDidOpenCustomEditor(event => this.resolveWidget(event[0], event[1]))
+            this.openWithService.registerHandler({
+                id: editor.viewType,
+                label: editorOpenHandler.label,
+                providerName: plugin.metadata.model.displayName,
+                canHandle: uri => editorOpenHandler.canOpenWith(uri),
+                open: uri => editorOpenHandler.open(uri)
+            })
         );
         return toDispose;
     }
 
-    resolveWidget = (widget: CustomEditorWidget, options?: WidgetOpenerOptions) => {
+    async resolveWidget(widget: CustomEditorWidget): Promise<void> {
         const resolver = this.resolvers.get(widget.viewType);
         if (resolver) {
-            resolver(widget, options);
+            await resolver(widget);
         } else {
-            this.pendingEditors.add(widget);
+            const deferred = new Deferred<void>();
+            const disposable = widget.onDidDispose(() => this.pendingEditors.delete(widget));
+            this.pendingEditors.set(widget, { deferred, disposable });
             this.onWillOpenCustomEditorEmitter.fire(widget.viewType);
+            return deferred.promise;
         }
     };
 
-    registerResolver(viewType: string, resolver: (widget: CustomEditorWidget, options?: WidgetOpenerOptions) => void): Disposable {
+    registerResolver(viewType: string, resolver: (widget: CustomEditorWidget) => Promise<void>): Disposable {
         if (this.resolvers.has(viewType)) {
             throw new Error(`Resolver for ${viewType} already registered`);
         }
 
-        for (const editorWidget of this.pendingEditors) {
+        for (const [editorWidget, { deferred, disposable }] of this.pendingEditors.entries()) {
             if (editorWidget.viewType === viewType) {
-                resolver(editorWidget);
+                resolver(editorWidget).then(() => deferred.resolve(), err => deferred.reject(err)).finally(() => disposable.dispose());
                 this.pendingEditors.delete(editorWidget);
             }
         }

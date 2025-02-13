@@ -28,7 +28,6 @@ import { TerminalWidget, TerminalWidgetOptions } from './base/terminal-widget';
 import { ITerminalServer, terminalPath } from '../common/terminal-protocol';
 import { TerminalWatcher } from '../common/terminal-watcher';
 import { IShellTerminalServer, shellTerminalPath, ShellTerminalServerProxy } from '../common/shell-terminal-protocol';
-import { createCommonBindings } from '../common/terminal-common-module';
 import { TerminalService } from './base/terminal-service';
 import { bindTerminalPreferences } from './terminal-preferences';
 import { TerminalContribution } from './terminal-contribution';
@@ -41,7 +40,7 @@ import { TerminalThemeService } from './terminal-theme-service';
 import { QuickAccessContribution } from '@theia/core/lib/browser/quick-input/quick-access';
 import { createXtermLinkFactory, TerminalLinkProvider, TerminalLinkProviderContribution, XtermLinkFactory } from './terminal-link-provider';
 import { UrlLinkProvider } from './terminal-url-link-provider';
-import { FileDiffPostLinkProvider, FileDiffPreLinkProvider, FileLinkProvider } from './terminal-file-link-provider';
+import { FileDiffPostLinkProvider, FileDiffPreLinkProvider, FileLinkProvider, LocalFileLinkProvider } from './terminal-file-link-provider';
 import {
     ContributedTerminalProfileStore, DefaultProfileStore, DefaultTerminalProfileService,
     TerminalProfileService, TerminalProfileStore, UserTerminalProfileStore
@@ -104,8 +103,6 @@ export default new ContainerModule(bind => {
     }).inSingletonScope();
     bind(IShellTerminalServer).toService(ShellTerminalServerProxy);
 
-    createCommonBindings(bind);
-
     bindContributionProvider(bind, TerminalContribution);
 
     // terminal link provider contribution point
@@ -123,6 +120,8 @@ export default new ContainerModule(bind => {
     bind(TerminalLinkProvider).toService(FileDiffPreLinkProvider);
     bind(FileDiffPostLinkProvider).toSelf().inSingletonScope();
     bind(TerminalLinkProvider).toService(FileDiffPostLinkProvider);
+    bind(LocalFileLinkProvider).toSelf().inSingletonScope();
+    bind(TerminalLinkProvider).toService(LocalFileLinkProvider);
 
     bind(ContributedTerminalProfileStore).to(DefaultProfileStore).inSingletonScope();
     bind(UserTerminalProfileStore).to(DefaultProfileStore).inSingletonScope();
@@ -132,5 +131,5 @@ export default new ContainerModule(bind => {
         return new DefaultTerminalProfileService(userStore, contributedStore);
     }).inSingletonScope();
 
-    bind(FrontendApplicationContribution).to(TerminalFrontendContribution);
+    bind(FrontendApplicationContribution).toService(TerminalFrontendContribution);
 });

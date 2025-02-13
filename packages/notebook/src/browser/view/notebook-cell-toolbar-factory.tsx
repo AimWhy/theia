@@ -20,9 +20,8 @@ import { inject, injectable } from '@theia/core/shared/inversify';
 import { ContextKeyService } from '@theia/core/lib/browser/context-key-service';
 import { NotebookCellSidebar, NotebookCellToolbar } from './notebook-cell-toolbar';
 import { ContextMenuRenderer } from '@theia/core/lib/browser';
-import { NotebookModel } from '../view-model/notebook-model';
 import { NotebookCellModel } from '../view-model/notebook-cell-model';
-import { NotebookCellOutputModel } from '../view-model/notebook-cell-output-model';
+import { NotebookContextManager } from '../service/notebook-context-manager';
 
 export interface NotebookCellToolbarItem {
     id: string;
@@ -31,6 +30,11 @@ export interface NotebookCellToolbarItem {
     onClick: (e: React.MouseEvent) => void;
     isVisible: () => boolean;
     contextKeys?: Set<string>
+}
+
+export interface toolbarItemOptions {
+    contextMenuArgs?: () => unknown[];
+    commandArgs?: () => unknown[];
 }
 
 @injectable()
@@ -48,32 +52,34 @@ export class NotebookCellToolbarFactory {
     @inject(CommandRegistry)
     protected readonly commandRegistry: CommandRegistry;
 
-    renderCellToolbar(menuPath: string[], notebookModel: NotebookModel, cell: NotebookCellModel): React.ReactNode {
-        return <NotebookCellToolbar getMenuItems={() => this.getMenuItems(menuPath, notebookModel, cell)}
-            onContextKeysChanged={cell.notebookCellContextManager.onDidChangeContext} />;
+    @inject(NotebookContextManager)
+    protected readonly notebookContextManager: NotebookContextManager;
+
+    renderCellToolbar(menuPath: string[], cell: NotebookCellModel, itemOptions: toolbarItemOptions): React.ReactNode {
+        return <NotebookCellToolbar getMenuItems={() => this.getMenuItems(menuPath, cell, itemOptions)}
+            onContextKeysChanged={this.notebookContextManager.onDidChangeContext} />;
     }
 
-    renderSidebar(menuPath: string[], notebookModel: NotebookModel, cell: NotebookCellModel, output?: NotebookCellOutputModel): React.ReactNode {
-        return <NotebookCellSidebar getMenuItems={() => this.getMenuItems(menuPath, notebookModel, cell, output)}
-            onContextKeysChanged={cell.notebookCellContextManager.onDidChangeContext} />;
+    renderSidebar(menuPath: string[], cell: NotebookCellModel, itemOptions: toolbarItemOptions): React.ReactNode {
+        return <NotebookCellSidebar getMenuItems={() => this.getMenuItems(menuPath, cell, itemOptions)}
+            onContextKeysChanged={this.notebookContextManager.onDidChangeContext} />;
     }
 
-    private getMenuItems(menuItemPath: string[], notebookModel: NotebookModel, cell: NotebookCellModel, output?: NotebookCellOutputModel): NotebookCellToolbarItem[] {
+    private getMenuItems(menuItemPath: string[], cell: NotebookCellModel, itemOptions: toolbarItemOptions): NotebookCellToolbarItem[] {
         const inlineItems: NotebookCellToolbarItem[] = [];
-
         for (const menuNode of this.menuRegistry.getMenu(menuItemPath).children) {
-            if (!menuNode.when || this.contextKeyService.match(menuNode.when, cell.context ?? undefined)) {
+            if (!menuNode.when || this.notebookContextManager.getCellContext(cell.handle).match(menuNode.when, this.notebookContextManager.context)) {
                 if (menuNode.role === CompoundMenuNodeRole.Flat) {
-                    inlineItems.push(...menuNode.children?.map(child => this.createToolbarItem(child, notebookModel, cell, output)) ?? []);
+                    inlineItems.push(...menuNode.children?.map(child => this.createToolbarItem(child, itemOptions)) ?? []);
                 } else {
-                    inlineItems.push(this.createToolbarItem(menuNode, notebookModel, cell, output));
+                    inlineItems.push(this.createToolbarItem(menuNode, itemOptions));
                 }
             }
         }
         return inlineItems;
     }
 
-    private createToolbarItem(menuNode: MenuNode, notebookModel: NotebookModel, cell: NotebookCellModel, output?: NotebookCellOutputModel): NotebookCellToolbarItem {
+    private createToolbarItem(menuNode: MenuNode, itemOptions: toolbarItemOptions): NotebookCellToolbarItem {
         const menuPath = menuNode.role === CompoundMenuNodeRole.Submenu ? this.menuRegistry.getPath(menuNode) : undefined;
         return {
             id: menuNode.id,
@@ -85,10 +91,11 @@ export class NotebookCellToolbarFactory {
                         anchor: e.nativeEvent,
                         menuPath,
                         includeAnchorArg: false,
-                        args: [notebookModel, cell, output]
+                        args: itemOptions.contextMenuArgs?.(),
+                        context: this.notebookContextManager.context
                     }) :
-                () => this.commandRegistry.executeCommand(menuNode.command!, notebookModel, cell, output),
-            isVisible: () => menuPath ? true : Boolean(this.commandRegistry.getVisibleHandler(menuNode.command!, notebookModel, cell, output)),
+                () => this.commandRegistry.executeCommand(menuNode.command!, ...(itemOptions.commandArgs?.() ?? [])),
+            isVisible: () => menuPath ? true : Boolean(this.commandRegistry.getVisibleHandler(menuNode.command!, ...(itemOptions.commandArgs?.() ?? []))),
             contextKeys: menuNode.when ? this.contextKeyService.parseKeys(menuNode.when) : undefined
         };
     }

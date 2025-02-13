@@ -15,10 +15,10 @@
 // *****************************************************************************
 
 import * as React from '@theia/core/shared/react';
-import { CommandRegistry, MenuModelRegistry, URI } from '@theia/core';
-import { ReactWidget, Navigatable, SaveableSource, Message, DelegatingSaveable, lock, unlock } from '@theia/core/lib/browser';
+import { CommandRegistry, MenuModelRegistry, URI, nls } from '@theia/core';
+import { ReactWidget, Navigatable, SaveableSource, Message, DelegatingSaveable, lock, unlock, animationFrame, codicon } from '@theia/core/lib/browser';
 import { ReactNode } from '@theia/core/shared/react';
-import { CellKind } from '../common';
+import { CellKind, NotebookCellsChangeType } from '../common';
 import { CellRenderer as CellRenderer, NotebookCellListView } from './view/notebook-cell-list-view';
 import { NotebookCodeCellRenderer } from './view/notebook-code-cell-view';
 import { NotebookMarkdownCellRenderer } from './view/notebook-markdown-cell-view';
@@ -30,7 +30,13 @@ import { NotebookEditorWidgetService } from './service/notebook-editor-widget-se
 import { NotebookMainToolbarRenderer } from './view/notebook-main-toolbar';
 import { Deferred } from '@theia/core/lib/common/promise-util';
 import { MarkdownString } from '@theia/core/lib/common/markdown-rendering';
-
+import { NotebookContextManager } from './service/notebook-context-manager';
+import { NotebookViewportService } from './view/notebook-viewport-service';
+import { NotebookCellCommands } from './contributions/notebook-cell-actions-contribution';
+import { NotebookFindWidget } from './view/notebook-find-widget';
+import debounce = require('lodash/debounce');
+import { CellOutputWebview, CellOutputWebviewFactory } from './renderers/cell-output-webview';
+import { NotebookCellOutputModel } from './view-model/notebook-cell-output-model';
 const PerfectScrollbar = require('react-perfect-scrollbar');
 
 export const NotebookEditorWidgetContainerFactory = Symbol('NotebookEditorWidgetContainerFactory');
@@ -39,12 +45,23 @@ export function createNotebookEditorWidgetContainer(parent: interfaces.Container
     const child = parent.createChild();
 
     child.bind(NotebookEditorProps).toConstantValue(props);
+
+    const cellOutputWebviewFactory: CellOutputWebviewFactory = parent.get(CellOutputWebviewFactory);
+    child.bind(CellOutputWebview).toConstantValue(cellOutputWebviewFactory());
+
+    child.bind(NotebookContextManager).toSelf().inSingletonScope();
+    child.bind(NotebookMainToolbarRenderer).toSelf().inSingletonScope();
+    child.bind(NotebookCellToolbarFactory).toSelf().inSingletonScope();
+    child.bind(NotebookCodeCellRenderer).toSelf().inSingletonScope();
+    child.bind(NotebookMarkdownCellRenderer).toSelf().inSingletonScope();
+    child.bind(NotebookViewportService).toSelf().inSingletonScope();
+
     child.bind(NotebookEditorWidget).toSelf();
 
     return child;
 }
 
-const NotebookEditorProps = Symbol('NotebookEditorProps');
+export const NotebookEditorProps = Symbol('NotebookEditorProps');
 
 interface RenderMessage {
     rendererId: string;
@@ -55,6 +72,7 @@ export interface NotebookEditorProps {
     uri: URI,
     readonly notebookType: string,
     notebookData: Promise<NotebookModel>
+    error?: Promise<string>
 }
 export const NOTEBOOK_EDITOR_ID_PREFIX = 'notebook:';
 
@@ -79,12 +97,21 @@ export class NotebookEditorWidget extends ReactWidget implements Navigatable, Sa
     @inject(NotebookMainToolbarRenderer)
     protected notebookMainToolbarRenderer: NotebookMainToolbarRenderer;
 
+    @inject(NotebookContextManager)
+    protected notebookContextManager: NotebookContextManager;
+
     @inject(NotebookCodeCellRenderer)
     protected codeCellRenderer: NotebookCodeCellRenderer;
     @inject(NotebookMarkdownCellRenderer)
     protected markdownCellRenderer: NotebookMarkdownCellRenderer;
     @inject(NotebookEditorProps)
     protected readonly props: NotebookEditorProps;
+
+    @inject(NotebookViewportService)
+    protected readonly viewportService: NotebookViewportService;
+
+    @inject(CellOutputWebview)
+    protected readonly cellOutputWebview: CellOutputWebview;
 
     protected readonly onDidChangeModelEmitter = new Emitter<void>();
     readonly onDidChangeModel = this.onDidChangeModelEmitter.event;
@@ -102,11 +129,25 @@ export class NotebookEditorWidget extends ReactWidget implements Navigatable, Sa
     readonly onPostRendererMessage = this.onPostRendererMessageEmitter.event;
 
     protected readonly onDidReceiveKernelMessageEmitter = new Emitter<unknown>();
-    readonly onDidRecieveKernelMessage = this.onDidReceiveKernelMessageEmitter.event;
+    readonly onDidReceiveKernelMessage = this.onDidReceiveKernelMessageEmitter.event;
+
+    protected readonly onDidChangeOutputInputFocusEmitter = new Emitter<boolean>();
+    readonly onDidChangeOutputInputFocus = this.onDidChangeOutputInputFocusEmitter.event;
 
     protected readonly renderers = new Map<CellKind, CellRenderer>();
     protected _model?: NotebookModel;
+    protected error?: string;
     protected _ready: Deferred<NotebookModel> = new Deferred();
+    protected _findWidgetVisible = false;
+    protected _findWidgetRef = React.createRef<NotebookFindWidget>();
+    protected scrollBarRef = React.createRef<{ updateScroll(): void }>();
+    protected debounceFind = debounce(() => {
+        this._findWidgetRef.current?.search({});
+    }, 30, {
+        trailing: true,
+        maxWait: 100,
+        leading: false
+    });
 
     get notebookType(): string {
         return this.props.notebookType;
@@ -123,7 +164,6 @@ export class NotebookEditorWidget extends ReactWidget implements Navigatable, Sa
     @postConstruct()
     protected init(): void {
         this.id = NOTEBOOK_EDITOR_ID_PREFIX + this.props.uri.toString();
-        this.node.tabIndex = -1;
 
         this.scrollOptions = {
             suppressScrollY: true
@@ -138,12 +178,39 @@ export class NotebookEditorWidget extends ReactWidget implements Navigatable, Sa
         this.renderers.set(CellKind.Markup, this.markdownCellRenderer);
         this.renderers.set(CellKind.Code, this.codeCellRenderer);
         this._ready.resolve(this.waitForData());
+        this.ready.then(model => {
+            if (model.cells.length === 1 && model.cells[0].source === '') {
+                this.commandRegistry.executeCommand(NotebookCellCommands.EDIT_COMMAND.id, model, model.cells[0]);
+                model.setSelectedCell(model.cells[0]);
+            }
+            model.onDidChangeContent(changeEvents => {
+                const cellEvent = changeEvents.filter(event => event.kind === NotebookCellsChangeType.Move || event.kind === NotebookCellsChangeType.ModelChange);
+                if (cellEvent.length > 0) {
+                    this.cellOutputWebview.cellsChanged(cellEvent);
+                }
+            });
+        });
+        this.props.error?.then(error => {
+            this.error = error;
+            this.update();
+        });
     }
 
     protected async waitForData(): Promise<NotebookModel> {
         this._model = await this.props.notebookData;
+        this.cellOutputWebview.init(this._model, this);
         this.saveable.delegate = this._model;
         this.toDispose.push(this._model);
+        this.toDispose.push(this._model.onDidChangeContent(() => {
+            // Update the scroll bar content after the content has changed
+            // Wait one frame to ensure that the content has been rendered
+            animationFrame().then(() => this.scrollBarRef.current?.updateScroll());
+        }));
+        this.toDispose.push(this._model.onContentChanged(() => {
+            if (this._findWidgetVisible) {
+                this.debounceFind();
+            }
+        }));
         this.toDispose.push(this._model.onDidChangeReadOnly(readOnly => {
             if (readOnly) {
                 lock(this.title);
@@ -158,13 +225,15 @@ export class NotebookEditorWidget extends ReactWidget implements Navigatable, Sa
         }
         // Ensure that the model is loaded before adding the editor
         this.notebookEditorService.addNotebookEditor(this);
+        this._model.selectedCell = this._model.cells[0];
         this.update();
+        this.notebookContextManager.init(this);
         return this._model;
     }
 
     protected override onActivateRequest(msg: Message): void {
         super.onActivateRequest(msg);
-        this.node.focus();
+        (this.node.getElementsByClassName('theia-notebook-main-container')[0] as HTMLDivElement)?.focus();
     }
 
     getResourceUri(): URI | undefined {
@@ -185,23 +254,67 @@ export class NotebookEditorWidget extends ReactWidget implements Navigatable, Sa
 
     protected render(): ReactNode {
         if (this._model) {
-            return <div className='theia-notebook-main-container'>
-                {this.notebookMainToolbarRenderer.render(this._model)}
-                <PerfectScrollbar className='theia-notebook-scroll-container'>
-                    <NotebookCellListView renderers={this.renderers}
-                        notebookModel={this._model}
-                        toolbarRenderer={this.cellToolbarFactory}
-                        commandRegistry={this.commandRegistry} />
-                </PerfectScrollbar>
+            return <div className='theia-notebook-main-container' tabIndex={-1}>
+                <div className='theia-notebook-overlay'>
+                    <NotebookFindWidget
+                        ref={this._findWidgetRef}
+                        hidden={!this._findWidgetVisible}
+                        onClose={() => {
+                            this._findWidgetVisible = false;
+                            this._model?.findMatches({
+                                activeFilters: [],
+                                matchCase: false,
+                                regex: false,
+                                search: '',
+                                wholeWord: false
+                            });
+                            this.update();
+                        }}
+                        onSearch={options => this._model?.findMatches(options) ?? []}
+                        onReplace={(matches, replaceText) => this._model?.replaceAll(matches, replaceText)}
+                    />
+                </div>
+                {this.notebookMainToolbarRenderer.render(this._model, this.node)}
+                <div
+                    className='theia-notebook-viewport'
+                    ref={(ref: HTMLDivElement) => this.viewportService.viewportElement = ref}
+                >
+                    <PerfectScrollbar className='theia-notebook-scroll-container'
+                        ref={this.scrollBarRef}
+                        onScrollY={(e: HTMLDivElement) => this.viewportService.onScroll(e)}>
+                        <div className='theia-notebook-scroll-area'>
+                            {this.cellOutputWebview.render()}
+                            <NotebookCellListView renderers={this.renderers}
+                                notebookModel={this._model}
+                                notebookContext={this.notebookContextManager}
+                                toolbarRenderer={this.cellToolbarFactory}
+                                commandRegistry={this.commandRegistry}
+                                menuRegistry={this.menuRegistry} />
+                        </div>
+                    </PerfectScrollbar>
+                </div>
+            </div>;
+        } else if (this.error) {
+            return <div className='theia-notebook-main-container error-message' tabIndex={-1}>
+                <span className={codicon('error')}></span>
+                <h3>{nls.localizeByDefault('The editor could not be opened because the file was not found.')}</h3>
             </div>;
         } else {
-            return <div></div>;
+            return <div className='theia-notebook-main-container' tabIndex={-1}>
+                <div className='theia-notebook-main-loading-indicator'></div>
+            </div>;
         }
     }
 
     protected override onCloseRequest(msg: Message): void {
         super.onCloseRequest(msg);
         this.notebookEditorService.removeNotebookEditor(this);
+    }
+
+    requestOuputPresentationChange(cellHandle: number, output?: NotebookCellOutputModel): void {
+        if (output) {
+            this.cellOutputWebview.requestOutputPresentationUpdate(cellHandle, output);
+        }
     }
 
     postKernelMessage(message: unknown): void {
@@ -216,11 +329,38 @@ export class NotebookEditorWidget extends ReactWidget implements Navigatable, Sa
         this.onDidReceiveKernelMessageEmitter.fire(message);
     }
 
+    outputInputFocusChanged(focused: boolean): void {
+        this.onDidChangeOutputInputFocusEmitter.fire(focused);
+    }
+
+    showFindWidget(): void {
+        if (!this._findWidgetVisible) {
+            this._findWidgetVisible = true;
+            this.update();
+        }
+        this._findWidgetRef.current?.focusSearch(this._model?.selectedText);
+    }
+
     override dispose(): void {
+        this.cellOutputWebview.dispose();
+        this.notebookContextManager.dispose();
         this.onDidChangeModelEmitter.dispose();
         this.onDidPostKernelMessageEmitter.dispose();
         this.onDidReceiveKernelMessageEmitter.dispose();
         this.onPostRendererMessageEmitter.dispose();
+        this.onDidChangeOutputInputFocusEmitter.dispose();
+        this.viewportService.dispose();
+        this._model?.dispose();
         super.dispose();
+    }
+
+    protected override onAfterShow(msg: Message): void {
+        super.onAfterShow(msg);
+        this.notebookEditorService.notebookEditorFocusChanged(this, true);
+    }
+
+    protected override onAfterHide(msg: Message): void {
+        super.onAfterHide(msg);
+        this.notebookEditorService.notebookEditorFocusChanged(this, false);
     }
 }

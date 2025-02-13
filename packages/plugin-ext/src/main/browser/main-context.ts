@@ -40,11 +40,9 @@ import { DecorationsMainImpl } from './decorations/decorations-main';
 import { ClipboardMainImpl } from './clipboard-main';
 import { DocumentsMainImpl } from './documents-main';
 import { TextEditorsMainImpl } from './text-editors-main';
-import { EditorManager } from '@theia/editor/lib/browser';
 import { EditorModelService } from './text-editor-model-service';
 import { OpenerService } from '@theia/core/lib/browser/opener-service';
 import { ApplicationShell } from '@theia/core/lib/browser/shell/application-shell';
-import { MonacoBulkEditService } from '@theia/monaco/lib/browser/monaco-bulk-edit-service';
 import { MainFileSystemEventService } from './main-file-system-event-service';
 import { LabelServiceMainImpl } from './label-service-main';
 import { TimelineMainImpl } from './timeline-main';
@@ -59,17 +57,20 @@ import { UntitledResourceResolver } from '@theia/core/lib/common/resource';
 import { ThemeService } from '@theia/core/lib/browser/theming';
 import { TabsMainImpl } from './tabs/tabs-main';
 import { NotebooksMainImpl } from './notebooks/notebooks-main';
-import { NotebookService } from '@theia/notebook/lib/browser';
 import { LocalizationMainImpl } from './localization-main';
 import { NotebookRenderersMainImpl } from './notebooks/notebook-renderers-main';
-import { HostedPluginSupport } from '../../hosted/browser/hosted-plugin';
 import { NotebookEditorsMainImpl } from './notebooks/notebook-editors-main';
 import { NotebookDocumentsMainImpl } from './notebooks/notebook-documents-main';
 import { NotebookKernelsMainImpl } from './notebooks/notebook-kernels-main';
 import { NotebooksAndEditorsMain } from './notebooks/notebook-documents-and-editors-main';
 import { TestingMainImpl } from './test-main';
+import { UriMainImpl } from './uri-main';
+import { LoggerMainImpl } from './logger-main';
 
 export function setUpPluginApi(rpc: RPCProtocol, container: interfaces.Container): void {
+    const loggerMain = new LoggerMainImpl(container);
+    rpc.set(PLUGIN_RPC_CONTEXT.LOGGER_MAIN, loggerMain);
+
     const authenticationMain = new AuthenticationMainImpl(rpc, container);
     rpc.set(PLUGIN_RPC_CONTEXT.AUTHENTICATION_MAIN, authenticationMain);
 
@@ -91,30 +92,31 @@ export function setUpPluginApi(rpc: RPCProtocol, container: interfaces.Container
     const preferenceRegistryMain = new PreferenceRegistryMainImpl(rpc, container);
     rpc.set(PLUGIN_RPC_CONTEXT.PREFERENCE_REGISTRY_MAIN, preferenceRegistryMain);
 
-    const editorsAndDocuments = new EditorsAndDocumentsMain(rpc, container);
+    const tabsMain = new TabsMainImpl(rpc, container);
+    rpc.set(PLUGIN_RPC_CONTEXT.TABS_MAIN, tabsMain);
+
+    const editorsAndDocuments = new EditorsAndDocumentsMain(rpc, container, tabsMain);
+
+    const notebookDocumentsMain = new NotebookDocumentsMainImpl(rpc, container);
+    rpc.set(PLUGIN_RPC_CONTEXT.NOTEBOOK_DOCUMENTS_MAIN, notebookDocumentsMain);
 
     const modelService = container.get(EditorModelService);
-    const editorManager = container.get(EditorManager);
     const openerService = container.get<OpenerService>(OpenerService);
     const shell = container.get(ApplicationShell);
     const untitledResourceResolver = container.get(UntitledResourceResolver);
     const languageService = container.get(MonacoLanguages);
-    const documentsMain = new DocumentsMainImpl(editorsAndDocuments, modelService, rpc, editorManager, openerService, shell, untitledResourceResolver, languageService);
+    const documentsMain = new DocumentsMainImpl(editorsAndDocuments, notebookDocumentsMain, modelService, rpc,
+        openerService, shell, untitledResourceResolver, languageService);
     rpc.set(PLUGIN_RPC_CONTEXT.DOCUMENTS_MAIN, documentsMain);
 
-    const notebookService = container.get(NotebookService);
-    const pluginSupport = container.get(HostedPluginSupport);
-    rpc.set(PLUGIN_RPC_CONTEXT.NOTEBOOKS_MAIN, new NotebooksMainImpl(rpc, notebookService, pluginSupport));
+    rpc.set(PLUGIN_RPC_CONTEXT.NOTEBOOKS_MAIN, new NotebooksMainImpl(rpc, container, commandRegistryMain));
     rpc.set(PLUGIN_RPC_CONTEXT.NOTEBOOK_RENDERERS_MAIN, new NotebookRenderersMainImpl(rpc, container));
     const notebookEditorsMain = new NotebookEditorsMainImpl(rpc, container);
     rpc.set(PLUGIN_RPC_CONTEXT.NOTEBOOK_EDITORS_MAIN, notebookEditorsMain);
-    const notebookDocumentsMain = new NotebookDocumentsMainImpl(rpc, container);
-    rpc.set(PLUGIN_RPC_CONTEXT.NOTEBOOK_DOCUMENTS_MAIN, notebookDocumentsMain);
-    rpc.set(PLUGIN_RPC_CONTEXT.NOTEBOOK_DOCUMENTS_AND_EDITORS_MAIN, new NotebooksAndEditorsMain(rpc, container, notebookDocumentsMain, notebookEditorsMain));
+    rpc.set(PLUGIN_RPC_CONTEXT.NOTEBOOK_DOCUMENTS_AND_EDITORS_MAIN, new NotebooksAndEditorsMain(rpc, container, tabsMain, notebookDocumentsMain, notebookEditorsMain));
     rpc.set(PLUGIN_RPC_CONTEXT.NOTEBOOK_KERNELS_MAIN, new NotebookKernelsMainImpl(rpc, container));
 
-    const bulkEditService = container.get(MonacoBulkEditService);
-    const editorsMain = new TextEditorsMainImpl(editorsAndDocuments, documentsMain, rpc, bulkEditService);
+    const editorsMain = new TextEditorsMainImpl(editorsAndDocuments, documentsMain, rpc, container);
     rpc.set(PLUGIN_RPC_CONTEXT.TEXT_EDITORS_MAIN, editorsMain);
 
     // start listening only after all clients are subscribed to events
@@ -204,9 +206,9 @@ export function setUpPluginApi(rpc: RPCProtocol, container: interfaces.Container
     const commentsMain = new CommentsMainImp(rpc, container);
     rpc.set(PLUGIN_RPC_CONTEXT.COMMENTS_MAIN, commentsMain);
 
-    const tabsMain = new TabsMainImpl(rpc, container);
-    rpc.set(PLUGIN_RPC_CONTEXT.TABS_MAIN, tabsMain);
-
     const localizationMain = new LocalizationMainImpl(container);
     rpc.set(PLUGIN_RPC_CONTEXT.LOCALIZATION_MAIN, localizationMain);
+
+    const uriMain = new UriMainImpl(rpc, container);
+    rpc.set(PLUGIN_RPC_CONTEXT.URI_MAIN, uriMain);
 }

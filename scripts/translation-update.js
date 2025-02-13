@@ -17,13 +17,14 @@ if (hasNlsFileChanged()) {
 }
 
 function performNlsExtract() {
-    cp.spawnSync('yarn', [
+    cp.spawnSync('npx', [
         'theia', 'nls-extract',
         '-o', './packages/core/i18n/nls.json',
         '-e', 'vscode',
         '-f', './packages/**/browser/**/*.{ts,tsx}'
     ], {
-        shell: true
+        shell: true,
+        stdio: 'inherit'
     });
 }
 
@@ -37,12 +38,16 @@ function getDeepLToken() {
 }
 
 function performDeepLTranslation(token) {
-    cp.spawnSync('yarn', [
+    const childProcess = cp.spawnSync('npx', [
         'theia', 'nls-localize',
         '-f', './packages/core/i18n/nls.json',
-        '--free-api', '-k', token,
-        'cs', 'de', 'es', 'fr', 'hu', 'it', 'ja', 'pl', 'pt-br', 'pt-pt', 'ru', 'zh-cn'
+        '--free-api', '-k', token
     ], {
-        shell: true
+        shell: true,
+        stdio: 'inherit'
     });
+    if (childProcess.status !== 0) {
+        console.error('DeepL translation failed');
+        process.exit(1);
+    }
 }

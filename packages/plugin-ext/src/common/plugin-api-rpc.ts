@@ -89,7 +89,9 @@ import {
     InlineCompletionContext,
     DocumentDropEdit,
     DataTransferDTO,
-    DocumentDropEditProviderMetadata
+    DocumentDropEditProviderMetadata,
+    DebugStackFrameDTO,
+    DebugThreadDTO
 } from './plugin-api-rpc-model';
 import { ExtPluginApi } from './plugin-ext-api-contribution';
 import { KeysToAnyValues, KeysToKeysToAnyValue } from './types';
@@ -159,6 +161,18 @@ export enum UIKind {
     Web = 2
 }
 
+export enum ExtensionKind {
+    /**
+     * Extension runs where the UI runs.
+     */
+    UI = 1,
+
+    /**
+     * Extension runs where the remote extension host runs.
+     */
+    Workspace = 2
+}
+
 export interface EnvInit {
     queryParams: QueryParameters;
     language: string;
@@ -167,6 +181,7 @@ export interface EnvInit {
     appName: string;
     appHost: string;
     appRoot: string;
+    appUriScheme: string;
 }
 
 export interface PluginAPI {
@@ -178,6 +193,7 @@ export interface PluginManager {
     getAllPlugins(): Plugin[];
     getPluginById(pluginId: string): Plugin | undefined;
     getPluginExport(pluginId: string): PluginAPI | undefined;
+    getPluginKind(): theia.ExtensionKind;
     isRunning(pluginId: string): boolean;
     isActive(pluginId: string): boolean;
     activatePlugin(pluginId: string): PromiseLike<void>;
@@ -233,6 +249,7 @@ export interface PluginManagerInitializeParams {
     globalState: KeysToKeysToAnyValue
     workspaceState: KeysToKeysToAnyValue
     env: EnvInit
+    pluginKind: ExtensionKind
     extApi?: ExtPluginApi[]
     webview: WebviewInitData
     jsonValidation: PluginJsonValidationContribution[]
@@ -301,6 +318,7 @@ export interface TerminalServiceExt {
     $handleTerminalLink(link: ProvidedTerminalLink): Promise<void>;
     getEnvironmentVariableCollection(extensionIdentifier: string): theia.GlobalEnvironmentVariableCollection;
     $setShell(shell: string): void;
+    $reportOutputMatch(observerId: string, groups: string[]): void;
 }
 export interface OutputChannelRegistryExt {
     createOutputChannel(name: string, pluginInfo: PluginInfo): theia.OutputChannel,
@@ -324,7 +342,7 @@ export interface TerminalServiceMain {
      * Create new Terminal with Terminal options.
      * @param options - object with parameters to create new terminal.
      */
-    $createTerminal(id: string, options: theia.TerminalOptions, parentId?: string, isPseudoTerminal?: boolean): Promise<string>;
+    $createTerminal(id: string, options: TerminalOptions, parentId?: string, isPseudoTerminal?: boolean): Promise<string>;
 
     /**
      * Send text to the terminal by id.
@@ -438,6 +456,24 @@ export interface TerminalServiceMain {
      * @param providerId id of the terminal link provider to be unregistered.
      */
     $unregisterTerminalLinkProvider(providerId: string): Promise<void>;
+
+    /**
+     * Register a new terminal observer.
+     * @param providerId id of the terminal link provider to be registered.
+     * @param nrOfLinesToMatch the number of lines to match the outputMatcherRegex against
+     * @param outputMatcherRegex the regex to match the output to
+     */
+    $registerTerminalObserver(id: string, nrOfLinesToMatch: number, outputMatcherRegex: string): unknown;
+
+    /**
+     * Unregister the terminal observer with the specified id.
+     * @param providerId id of the terminal observer to be unregistered.
+     */
+    $unregisterTerminalObserver(id: string): unknown;
+}
+
+export interface TerminalOptions extends theia.TerminalOptions {
+    iconUrl?: string | { light: string; dark: string } | ThemeIcon;
 }
 
 export interface AutoFocus {
@@ -484,7 +520,7 @@ export interface StatusBarMessageRegistryMain {
 
 export interface QuickOpenExt {
     $onItemSelected(handle: number): void;
-    $validateInput(input: string): Promise<string | { content: string; severity: Severity; } | null | undefined> | undefined;
+    $validateInput(input: string): Promise<string | { content: string; severity: Severity; } | null | undefined>;
 
     $acceptOnDidAccept(sessionId: number): Promise<void>;
     $acceptDidChangeValue(sessionId: number, changedValue: string): Promise<void>;
@@ -495,10 +531,10 @@ export interface QuickOpenExt {
     $onDidChangeSelection(sessionId: number, handles: number[]): void;
 
     /* eslint-disable max-len */
-    showQuickPick(itemsOrItemsPromise: Array<theia.QuickPickItem> | Promise<Array<theia.QuickPickItem>>, options: theia.QuickPickOptions & { canPickMany: true; },
+    showQuickPick(plugin: Plugin, itemsOrItemsPromise: Array<theia.QuickPickItem> | Promise<Array<theia.QuickPickItem>>, options: theia.QuickPickOptions & { canPickMany: true; },
         token?: theia.CancellationToken): Promise<Array<theia.QuickPickItem> | undefined>;
-    showQuickPick(itemsOrItemsPromise: string[] | Promise<string[]>, options?: theia.QuickPickOptions, token?: theia.CancellationToken): Promise<string | undefined>;
-    showQuickPick(itemsOrItemsPromise: Array<theia.QuickPickItem> | Promise<Array<theia.QuickPickItem>>, options?: theia.QuickPickOptions, token?: theia.CancellationToken): Promise<theia.QuickPickItem | undefined>;
+    showQuickPick(plugin: Plugin, itemsOrItemsPromise: string[] | Promise<string[]>, options?: theia.QuickPickOptions, token?: theia.CancellationToken): Promise<string | undefined>;
+    showQuickPick(plugin: Plugin, itemsOrItemsPromise: Array<theia.QuickPickItem> | Promise<Array<theia.QuickPickItem>>, options?: theia.QuickPickOptions, token?: theia.CancellationToken): Promise<theia.QuickPickItem | undefined>;
 
     showInput(options?: theia.InputBoxOptions, token?: theia.CancellationToken): PromiseLike<string | undefined>;
     // showWorkspaceFolderPick(options?: theia.WorkspaceFolderPickOptions, token?: theia.CancellationToken): Promise<theia.WorkspaceFolder | undefined>
@@ -622,7 +658,7 @@ export interface TransferQuickPickItem {
     handle: number;
     kind: 'item' | 'separator',
     label: string;
-    iconPath?: UriComponents | { light: UriComponents; dark: UriComponents } | ThemeIcon;
+    iconUrl?: string | { light: string; dark: string } | ThemeIcon;
     description?: string;
     detail?: string;
     picked?: boolean;
@@ -646,7 +682,7 @@ export interface TransferQuickPickOptions<T extends TransferQuickPickItem> {
 
 export interface TransferQuickInputButton {
     handle?: number;
-    readonly iconPath: UriComponents | { light: UriComponents; dark: UriComponents } | ThemeIcon;
+    readonly iconUrl?: string | { light: string; dark: string } | ThemeIcon;
     readonly tooltip?: string | undefined;
 }
 
@@ -707,10 +743,18 @@ export interface QuickOpenMain {
     $showInputBox(options: TransferInputBox, validateInput: boolean): Promise<string | undefined>;
 }
 
+export interface FindFilesOptions {
+    exclude?: string;
+    useDefaultExcludes?: boolean;
+    useDefaultSearchExcludes?: boolean;
+    maxResults?: number;
+    useIgnoreFiles?: boolean;
+    fuzzy?: boolean;
+}
+
 export interface WorkspaceMain {
     $pickWorkspaceFolder(options: WorkspaceFolderPickOptionsMain): Promise<theia.WorkspaceFolder | undefined>;
-    $startFileSearch(includePattern: string, includeFolder: string | undefined, excludePatternOrDisregardExcludes: string | false,
-        maxResults: number | undefined, token: theia.CancellationToken): PromiseLike<UriComponents[]>;
+    $startFileSearch(includePattern: string, includeFolder: string | undefined, options: FindFilesOptions, token: theia.CancellationToken): PromiseLike<UriComponents[]>;
     $findTextInFiles(query: theia.TextSearchQuery, options: theia.FindTextInFilesOptions, searchRequestId: number,
         token?: theia.CancellationToken): Promise<theia.TextSearchComplete>
     $registerTextDocumentContentProvider(scheme: string): Promise<void>;
@@ -769,16 +813,16 @@ export interface RegisterTreeDataProviderOptions {
 }
 
 export interface TreeViewRevealOptions {
-    select: boolean
-    focus: boolean
-    expand: boolean | number
+    readonly select: boolean
+    readonly focus: boolean
+    readonly expand: boolean | number
 }
 
 export interface TreeViewsMain {
     $registerTreeDataProvider(treeViewId: string, options?: RegisterTreeDataProviderOptions): void;
     $readDroppedFile(contentId: string): Promise<BinaryBuffer>;
     $unregisterTreeDataProvider(treeViewId: string): void;
-    $refresh(treeViewId: string): Promise<void>;
+    $refresh(treeViewId: string, itemIds?: string[]): Promise<void>;
     $reveal(treeViewId: string, elementParentChain: string[], options: TreeViewRevealOptions): Promise<any>;
     $setMessage(treeViewId: string, message: string): void;
     $setTitle(treeViewId: string, title: string): void;
@@ -878,7 +922,8 @@ export interface WindowMain {
 }
 
 export interface WindowStateExt {
-    $onWindowStateChanged(focus: boolean): void;
+    $onDidChangeWindowFocus(focused: boolean): void;
+    $onDidChangeWindowActive(active: boolean): void;
 }
 
 export interface NotificationExt {
@@ -1193,7 +1238,7 @@ export interface UndoStopOptions {
 }
 
 export interface ApplyEditsOptions extends UndoStopOptions {
-    setEndOfLine: EndOfLine;
+    setEndOfLine: EndOfLine | undefined;
 }
 
 export interface ThemeColor {
@@ -1372,7 +1417,6 @@ export interface DocumentsMain {
     $tryShowDocument(uri: UriComponents, options?: TextDocumentShowOptions): Promise<void>;
     $tryOpenDocument(uri: UriComponents): Promise<boolean>;
     $trySaveDocument(uri: UriComponents): Promise<boolean>;
-    $tryCloseDocument(uri: UriComponents): Promise<boolean>;
 }
 
 export interface EnvMain {
@@ -1485,12 +1529,10 @@ export interface WorkspaceEditEntryMetadataDto {
     needsConfirmation: boolean;
     label: string;
     description?: string;
-    iconPath?: {
-        id: string;
-    } | {
+    iconPath?: ThemeIcon | {
         light: UriComponents;
         dark: UriComponents;
-    } | ThemeIcon;
+    };
 }
 
 export interface WorkspaceFileEditDto {
@@ -1546,6 +1588,16 @@ export interface WorkspaceNotebookCellEditDto {
     metadata?: NotebookWorkspaceEditMetadataDto;
     resource: UriComponents;
     cellEdit: CellEditOperationDto;
+}
+
+export namespace WorkspaceNotebookCellEditDto {
+    export function is(arg: WorkspaceNotebookCellEditDto | WorkspaceFileEditDto | WorkspaceTextEditDto): arg is WorkspaceNotebookCellEditDto {
+        return !!arg
+            && 'resource' in arg
+            && 'cellEdit' in arg
+            && arg.cellEdit !== null
+            && typeof arg.cellEdit === 'object';
+    }
 }
 
 export interface WorkspaceEditDto {
@@ -1834,12 +1886,12 @@ export interface WebviewViewsMain extends Disposable {
 }
 
 export interface CustomEditorsExt {
-    $resolveWebviewEditor<T>(
+    $resolveWebviewEditor(
         resource: UriComponents,
         newWebviewHandle: string,
         viewType: string,
         title: string,
-        widgetOpenerOptions: T | undefined,
+        position: number,
         options: theia.WebviewPanelOptions,
         cancellation: CancellationToken): Promise<void>;
     $createCustomDocument(resource: UriComponents, viewType: string, openContext: theia.CustomDocumentOpenContext, cancellation: CancellationToken): Promise<{ editable: boolean }>;
@@ -1862,7 +1914,6 @@ export interface CustomEditorsMain {
     $registerTextEditorProvider(viewType: string, options: theia.WebviewPanelOptions, capabilities: CustomTextEditorCapabilities): void;
     $registerCustomEditorProvider(viewType: string, options: theia.WebviewPanelOptions, supportsMultipleEditorsPerDocument: boolean): void;
     $unregisterEditorProvider(viewType: string): void;
-    $createCustomEditorPanel<T>(handle: string, title: string, widgetOpenerOptions: T | undefined, options: theia.WebviewPanelOptions & theia.WebviewOptions): Promise<void>;
     $onDidEdit(resource: UriComponents, viewType: string, editId: number, label: string | undefined): void;
     $onContentChange(resource: UriComponents, viewType: string): void;
 }
@@ -1940,6 +1991,8 @@ export interface DebugExt {
         debugConfiguration: DebugConfiguration
     ): Promise<theia.DebugConfiguration | undefined | null>;
 
+    $onDidChangeActiveFrame(frame: DebugStackFrameDTO | undefined): void;
+    $onDidChangeActiveThread(thread: DebugThreadDTO | undefined): void;
     $createDebugSession(debugConfiguration: DebugConfiguration, workspaceFolder: string | undefined): Promise<string>;
     $terminateDebugSession(sessionId: string): Promise<void>;
     $getTerminalCreationOptions(debugType: string): Promise<TerminalOptionsExt | undefined>;
@@ -2197,6 +2250,17 @@ export interface TestingExt {
     $onResolveChildren(controllerId: string, path: string[]): void;
 }
 
+// based from https://github.com/microsoft/vscode/blob/1.85.1/src/vs/workbench/api/common/extHostUrls.ts
+export interface UriExt {
+    registerUriHandler(handler: theia.UriHandler, plugin: PluginInfo): theia.Disposable;
+    $handleExternalUri(uri: UriComponents): Promise<void>;
+}
+
+export interface UriMain {
+    $registerUriHandler(extensionId: string, extensionName: string): void;
+    $unregisterUriHandler(extensionId: string): void;
+}
+
 export interface TestControllerUpdate {
     label: string;
     canRefresh: boolean;
@@ -2226,14 +2290,15 @@ export interface TestingMain {
 
     // Test runs
 
-    $notifyTestRunCreated(controllerId: string, run: TestRunDTO): void;
+    $notifyTestRunCreated(controllerId: string, run: TestRunDTO, preserveFocus: boolean): void;
     $notifyTestStateChanged(controllerId: string, runId: string, stateChanges: TestStateChangeDTO[], outputChanges: TestOutputDTO[]): void;
     $notifyTestRunEnded(controllerId: string, runId: string): void;
 }
 
 export const PLUGIN_RPC_CONTEXT = {
-    AUTHENTICATION_MAIN: <ProxyIdentifier<AuthenticationMain>>createProxyIdentifier<AuthenticationMain>('AuthenticationMain'),
-    COMMAND_REGISTRY_MAIN: <ProxyIdentifier<CommandRegistryMain>>createProxyIdentifier<CommandRegistryMain>('CommandRegistryMain'),
+    LOGGER_MAIN: createProxyIdentifier<LoggerMain>('LoggerMain'),
+    AUTHENTICATION_MAIN: createProxyIdentifier<AuthenticationMain>('AuthenticationMain'),
+    COMMAND_REGISTRY_MAIN: createProxyIdentifier<CommandRegistryMain>('CommandRegistryMain'),
     QUICK_OPEN_MAIN: createProxyIdentifier<QuickOpenMain>('QuickOpenMain'),
     DIALOGS_MAIN: createProxyIdentifier<DialogsMain>('DialogsMain'),
     WORKSPACE_MAIN: createProxyIdentifier<WorkspaceMain>('WorkspaceMain'),
@@ -2266,15 +2331,16 @@ export const PLUGIN_RPC_CONTEXT = {
     SECRETS_MAIN: createProxyIdentifier<SecretsMain>('SecretsMain'),
     DECORATIONS_MAIN: createProxyIdentifier<DecorationsMain>('DecorationsMain'),
     WINDOW_MAIN: createProxyIdentifier<WindowMain>('WindowMain'),
-    CLIPBOARD_MAIN: <ProxyIdentifier<ClipboardMain>>createProxyIdentifier<ClipboardMain>('ClipboardMain'),
-    LABEL_SERVICE_MAIN: <ProxyIdentifier<LabelServiceMain>>createProxyIdentifier<LabelServiceMain>('LabelServiceMain'),
-    TIMELINE_MAIN: <ProxyIdentifier<TimelineMain>>createProxyIdentifier<TimelineMain>('TimelineMain'),
-    THEMING_MAIN: <ProxyIdentifier<ThemingMain>>createProxyIdentifier<ThemingMain>('ThemingMain'),
-    COMMENTS_MAIN: <ProxyIdentifier<CommentsMain>>createProxyIdentifier<CommentsMain>('CommentsMain'),
-    TABS_MAIN: <ProxyIdentifier<TabsMain>>createProxyIdentifier<TabsMain>('TabsMain'),
-    TELEMETRY_MAIN: <ProxyIdentifier<TelemetryMain>>createProxyIdentifier<TelemetryMain>('TelemetryMain'),
-    LOCALIZATION_MAIN: <ProxyIdentifier<LocalizationMain>>createProxyIdentifier<LocalizationMain>('LocalizationMain'),
-    TESTING_MAIN: createProxyIdentifier<TestingMain>('TestingMain')
+    CLIPBOARD_MAIN: createProxyIdentifier<ClipboardMain>('ClipboardMain'),
+    LABEL_SERVICE_MAIN: createProxyIdentifier<LabelServiceMain>('LabelServiceMain'),
+    TIMELINE_MAIN: createProxyIdentifier<TimelineMain>('TimelineMain'),
+    THEMING_MAIN: createProxyIdentifier<ThemingMain>('ThemingMain'),
+    COMMENTS_MAIN: createProxyIdentifier<CommentsMain>('CommentsMain'),
+    TABS_MAIN: createProxyIdentifier<TabsMain>('TabsMain'),
+    TELEMETRY_MAIN: createProxyIdentifier<TelemetryMain>('TelemetryMain'),
+    LOCALIZATION_MAIN: createProxyIdentifier<LocalizationMain>('LocalizationMain'),
+    TESTING_MAIN: createProxyIdentifier<TestingMain>('TestingMain'),
+    URI_MAIN: createProxyIdentifier<UriMain>('UriMain')
 };
 
 export const MAIN_RPC_CONTEXT = {
@@ -2316,7 +2382,8 @@ export const MAIN_RPC_CONTEXT = {
     COMMENTS_EXT: createProxyIdentifier<CommentsExt>('CommentsExt'),
     TABS_EXT: createProxyIdentifier<TabsExt>('TabsExt'),
     TELEMETRY_EXT: createProxyIdentifier<TelemetryExt>('TelemetryExt)'),
-    TESTING_EXT: createProxyIdentifier<TestingExt>('TestingExt')
+    TESTING_EXT: createProxyIdentifier<TestingExt>('TestingExt'),
+    URI_EXT: createProxyIdentifier<UriExt>('UriExt')
 };
 
 export interface TasksExt {
@@ -2340,13 +2407,14 @@ export interface TasksMain {
 }
 
 export interface AuthenticationExt {
-    $getSessions(id: string, scopes?: string[]): Promise<ReadonlyArray<theia.AuthenticationSession>>;
-    $createSession(id: string, scopes: string[]): Promise<theia.AuthenticationSession>;
+    $getSessions(providerId: string, scopes: string[] | undefined, options: theia.AuthenticationProviderSessionOptions): Promise<ReadonlyArray<theia.AuthenticationSession>>;
+    $createSession(id: string, scopes: string[], options: theia.AuthenticationProviderSessionOptions): Promise<theia.AuthenticationSession>;
     $removeSession(id: string, sessionId: string): Promise<void>;
     $onDidChangeAuthenticationSessions(provider: theia.AuthenticationProviderInformation): Promise<void>;
 }
 
 export interface AuthenticationMain {
+    $getAccounts(providerId: string): Thenable<readonly theia.AuthenticationSessionAccountInformation[]>;
     $registerAuthenticationProvider(id: string, label: string, supportsMultipleAccounts: boolean): void;
     $unregisterAuthenticationProvider(id: string): void;
     $onDidChangeSessions(providerId: string, event: AuthenticationProviderAuthenticationSessionsChangeEvent): void;
@@ -2448,6 +2516,10 @@ export type NotebookRawContentEventDto =
         readonly outputId: string;
         readonly outputItems: NotebookOutputItemDto[];
         readonly append: boolean;
+    }
+    | {
+        readonly kind: notebookCommon.NotebookCellsChangeType.ChangeDocumentMetadata
+        readonly metadata: notebookCommon.NotebookDocumentMetadata;
     }
     | notebookCommon.NotebookCellsChangeLanguageEvent
     | notebookCommon.NotebookCellsChangeMetadataEvent
@@ -2610,6 +2682,7 @@ export interface NotebookDocumentsExt {
 
 export interface NotebookDocumentsAndEditorsExt {
     $acceptDocumentsAndEditorsDelta(delta: NotebookDocumentsAndEditorsDelta): Promise<void>;
+    $acceptActiveCellEditorChange(newActiveEditor: string | null): void;
 }
 
 export interface NotebookDocumentsAndEditorsMain extends Disposable {
@@ -2686,4 +2759,16 @@ export interface StringDetails {
 
 export interface LocalizationMain {
     $fetchBundle(id: string): Promise<LanguagePackBundle | undefined>;
+}
+
+export enum LogLevel {
+    Trace = 1,
+    Debug = 2,
+    Info = 3,
+    Warn = 4,
+    Error = 5
+}
+
+export interface LoggerMain {
+    $log(level: LogLevel, name: string | undefined, message: string, params: any[]): void;
 }

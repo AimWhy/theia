@@ -14,12 +14,14 @@
 // SPDX-License-Identifier: EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0
 // *****************************************************************************
 
-import { URI } from '@theia/core';
+import { nls, URI } from '@theia/core';
 import { WidgetFactory, NavigatableWidgetOptions, LabelProvider } from '@theia/core/lib/browser';
 import { inject, injectable } from '@theia/core/shared/inversify';
 import { NotebookEditorWidget, NotebookEditorWidgetContainerFactory, NotebookEditorProps } from './notebook-editor-widget';
 import { NotebookService } from './service/notebook-service';
 import { NotebookModelResolverService } from './service/notebook-model-resolver-service';
+import { Deferred } from '@theia/core/lib/common/promise-util';
+import { NotebookModel } from './view-model/notebook-model';
 
 export interface NotebookEditorWidgetOptions extends NavigatableWidgetOptions {
     notebookType: string;
@@ -51,20 +53,41 @@ export class NotebookEditorWidgetFactory implements WidgetFactory {
 
         const editor = await this.createEditor(uri, options.notebookType);
 
-        const icon = this.labelProvider.getIcon(uri);
-        editor.title.label = this.labelProvider.getName(uri);
-        editor.title.iconClass = icon + ' file-icon';
-
+        this.setLabels(editor, uri);
+        const labelListener = this.labelProvider.onDidChange(event => {
+            if (event.affects(uri)) {
+                this.setLabels(editor, uri);
+            }
+        });
+        editor.onDidDispose(() => labelListener.dispose());
         return editor;
     }
 
-    private async createEditor(uri: URI, notebookType: string): Promise<NotebookEditorWidget> {
+    protected async createEditor(uri: URI, notebookType: string): Promise<NotebookEditorWidget> {
+        const notebookData = new Deferred<NotebookModel>();
+        const resolverError = new Deferred<string>();
+        this.notebookModelResolver.resolve(uri, notebookType).then(model => {
+            notebookData.resolve(model);
+        }).catch((reason: Error) => {
+            resolverError.resolve(reason.message);
+        });
 
         return this.createNotebookEditorWidget({
             uri,
             notebookType,
-            notebookData: this.notebookModelResolver.resolve(uri, notebookType),
+            notebookData: notebookData.promise,
+            error: resolverError.promise
         });
+    }
+
+    protected setLabels(editor: NotebookEditorWidget, uri: URI): void {
+        editor.title.caption = uri.path.fsPath();
+        if (editor.model?.readOnly) {
+            editor.title.caption += ` • ${nls.localizeByDefault('Read-only')}`;
+        }
+        const icon = this.labelProvider.getIcon(uri);
+        editor.title.label = this.labelProvider.getName(uri);
+        editor.title.iconClass = icon + ' file-icon';
     }
 
 }

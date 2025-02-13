@@ -20,6 +20,7 @@ import { TheiaAppLoader } from '../theia-app-loader';
 import { TheiaAboutDialog } from '../theia-about-dialog';
 import { TheiaMenuBar } from '../theia-main-menu';
 import { OSUtil } from '../util';
+import { TheiaExplorerView } from '../theia-explorer-view';
 
 test.describe('Theia Main Menu', () => {
 
@@ -96,7 +97,7 @@ test.describe('Theia Main Menu', () => {
         await (await menuBar.openMenu('Help')).clickMenuItem('About');
         const aboutDialog = new TheiaAboutDialog(app);
         expect(await aboutDialog.isVisible()).toBe(true);
-        await aboutDialog.page.getByRole('button', { name: 'OK' }).click();
+        await aboutDialog.page.locator('#theia-dialog-shell').getByRole('button', { name: 'OK' }).click();
         expect(await aboutDialog.isVisible()).toBe(false);
     });
 
@@ -109,4 +110,23 @@ test.describe('Theia Main Menu', () => {
         expect(await fileDialog.isVisible()).toBe(false);
     });
 
+    test('Create file via New File menu and accept', async () => {
+        await (await menuBar.openMenu('File')).clickMenuItem('New File...');
+        const quickPick = app.page.getByPlaceholder('Select File Type or Enter');
+        // type file name and press enter
+        await quickPick.fill('test.txt');
+        await quickPick.press('Enter');
+
+        // check file dialog is opened and accept with ENTER
+        const fileDialog = await app.page.waitForSelector('div[class="dialogBlock"]');
+        expect(await fileDialog.isVisible()).toBe(true);
+        await app.page.locator('#theia-dialog-shell').press('Enter');
+        expect(await fileDialog.isVisible()).toBe(false);
+
+        // check file in workspace exists
+        const explorer = await app.openView(TheiaExplorerView);
+        await explorer.refresh();
+        await explorer.waitForVisibleFileNodes();
+        expect(await explorer.existsFileNode('test.txt')).toBe(true);
+    });
 });

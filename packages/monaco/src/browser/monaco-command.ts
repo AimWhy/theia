@@ -34,20 +34,20 @@ import { ICodeEditorService } from '@theia/monaco-editor-core/esm/vs/editor/brow
 export namespace MonacoCommands {
 
     export const COMMON_ACTIONS = new Map<string, string>([
-        ['undo', CommonCommands.UNDO.id],
-        ['redo', CommonCommands.REDO.id],
         ['editor.action.selectAll', CommonCommands.SELECT_ALL.id],
         ['actions.find', CommonCommands.FIND.id],
-        ['editor.action.startFindReplaceAction', CommonCommands.REPLACE.id]
+        ['editor.action.startFindReplaceAction', CommonCommands.REPLACE.id],
+        ['editor.action.clipboardCutAction', CommonCommands.CUT.id],
+        ['editor.action.clipboardCopyAction', CommonCommands.COPY.id],
+        ['editor.action.clipboardPasteAction', CommonCommands.PASTE.id]
     ]);
 
     export const GO_TO_DEFINITION = 'editor.action.revealDefinition';
 
     export const EXCLUDE_ACTIONS = new Set([
         'editor.action.quickCommand',
-        'editor.action.clipboardCutAction',
-        'editor.action.clipboardCopyAction',
-        'editor.action.clipboardPasteAction'
+        'undo',
+        'redo'
     ]);
 }
 
@@ -163,7 +163,7 @@ export class MonacoEditorCommandHandlers implements CommandContribution {
                         const action = editor && editor.getAction(id);
                         return !!action && action.isSupported();
                     }
-                    if (!!EditorExtensionsRegistry.getEditorCommand(id)) {
+                    if (!!EditorExtensionsRegistry.getEditorCommand(id) || MonacoCommands.COMMON_ACTIONS.has(id)) {
                         return !!editor;
                     }
                     return true;

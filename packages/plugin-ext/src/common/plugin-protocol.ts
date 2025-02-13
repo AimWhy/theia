@@ -193,11 +193,13 @@ export interface PluginPackageViewWelcome {
     view: string;
     contents: string;
     when?: string;
+    enablement?: string;
 }
 
 export interface PluginPackageCommand {
     command: string;
     title: string;
+    shortTitle?: string;
     original?: string;
     category?: string;
     icon?: string | { light: string; dark: string; };
@@ -852,12 +854,14 @@ export interface ViewWelcome {
     view: string;
     content: string;
     when?: string;
+    enablement?: string;
     order: number;
 }
 
 export interface PluginCommand {
     command: string;
     title: string;
+    shortTitle?: string;
     originalTitle?: string;
     category?: string;
     iconUrl?: IconUrl;
@@ -982,6 +986,7 @@ export interface PluginDeployerHandler {
     deployFrontendPlugins(frontendPlugins: PluginDeployerEntry[]): Promise<number | undefined>;
     deployBackendPlugins(backendPlugins: PluginDeployerEntry[]): Promise<number | undefined>;
 
+    getDeployedPlugins(): Promise<DeployedPlugin[]>;
     getDeployedPluginsById(pluginId: string): DeployedPlugin[];
 
     getDeployedPlugin(pluginId: PluginIdentifiers.VersionedId): DeployedPlugin | undefined;

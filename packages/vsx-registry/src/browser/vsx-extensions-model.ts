@@ -28,10 +28,12 @@ import { PreferenceInspectionScope, PreferenceService } from '@theia/core/lib/br
 import { WorkspaceService } from '@theia/workspace/lib/browser';
 import { RecommendedExtensions } from './recommended-extensions/recommended-extensions-preference-contribution';
 import URI from '@theia/core/lib/common/uri';
-import { OVSXClient, VSXAllVersions, VSXExtensionRaw, VSXResponseError, VSXSearchEntry, VSXSearchOptions } from '@theia/ovsx-client/lib/ovsx-types';
+import { OVSXClient, VSXAllVersions, VSXExtensionRaw, VSXResponseError, VSXSearchEntry, VSXSearchOptions, VSXTargetPlatform } from '@theia/ovsx-client/lib/ovsx-types';
 import { OVSXClientProvider } from '../common/ovsx-client-provider';
 import { RequestContext, RequestService } from '@theia/core/shared/@theia/request';
-import { OVSXApiFilter } from '@theia/ovsx-client';
+import { OVSXApiFilterProvider } from '@theia/ovsx-client';
+import { ApplicationServer } from '@theia/core/lib/common/application-protocol';
+import { FileService } from '@theia/filesystem/lib/browser/file-service';
 
 @injectable()
 export class VSXExtensionsModel {
@@ -77,8 +79,14 @@ export class VSXExtensionsModel {
     @inject(RequestService)
     protected request: RequestService;
 
-    @inject(OVSXApiFilter)
-    protected vsxApiFilter: OVSXApiFilter;
+    @inject(OVSXApiFilterProvider)
+    protected vsxApiFilter: OVSXApiFilterProvider;
+
+    @inject(FileService)
+    protected readonly fileService: FileService;
+
+    @inject(ApplicationServer)
+    protected readonly applicationServer: ApplicationServer;
 
     @postConstruct()
     protected init(): void {
@@ -131,13 +139,24 @@ export class VSXExtensionsModel {
     resolve(id: string): Promise<VSXExtension> {
         return this.doChange(async () => {
             await this.initialized;
-            const extension = await this.refresh(id);
+            const extension = await this.refresh(id) ?? this.getExtension(id);
             if (!extension) {
                 throw new Error(`Failed to resolve ${id} extension.`);
             }
-            if (extension.readmeUrl) {
+            if (extension.readme === undefined) {
                 try {
-                    const rawReadme = RequestContext.asText(await this.request.request({ url: extension.readmeUrl }));
+                    let rawReadme: string = '';
+                    const installedReadme = await this.findReadmeFile(extension);
+                    // Attempt to read the local readme first
+                    // It saves network resources and is faster
+                    if (installedReadme) {
+                        const readmeContent = await this.fileService.readFile(installedReadme);
+                        rawReadme = readmeContent.value.toString();
+                    } else if (extension.readmeUrl) {
+                        rawReadme = RequestContext.asText(
+                            await this.request.request({ url: extension.readmeUrl })
+                        );
+                    }
                     const readme = this.compileReadme(rawReadme);
                     extension.update({ readme });
                 } catch (e) {
@@ -148,6 +167,22 @@ export class VSXExtensionsModel {
             }
             return extension;
         });
+    }
+
+    protected async findReadmeFile(extension: VSXExtension): Promise<URI | undefined> {
+        if (!extension.plugin) {
+            return undefined;
+        }
+        // Since we don't know the exact capitalization of the readme file (might be README.md, readme.md, etc.)
+        // We attempt to find the readme file by searching through the plugin's directories
+        const packageUri = new URI(extension.plugin.metadata.model.packageUri);
+        const pluginUri = packageUri.withPath(packageUri.path.join('..'));
+        const pluginDirStat = await this.fileService.resolve(pluginUri);
+        const possibleNames = ['readme.md', 'readme.txt', 'readme'];
+        const readmeFileUri = pluginDirStat.children
+            ?.find(child => possibleNames.includes(child.name.toLowerCase()))
+            ?.resource;
+        return readmeFileUri;
     }
 
     protected async initInstalled(): Promise<void> {
@@ -220,48 +255,60 @@ export class VSXExtensionsModel {
                 return;
             }
             const client = await this.clientProvider();
-            const result = await client.search(param);
-            this._searchError = result.error;
-            if (token.isCancellationRequested) {
-                return;
-            }
-            for (const data of result.extensions) {
-                const id = data.namespace.toLowerCase() + '.' + data.name.toLowerCase();
-                const allVersions = this.vsxApiFilter.getLatestCompatibleVersion(data);
-                if (!allVersions) {
-                    continue;
+            const filter = await this.vsxApiFilter();
+            try {
+                const result = await client.search(param);
+
+                if (token.isCancellationRequested) {
+                    return;
                 }
-                if (this.preferences.get('extensions.onlyShowVerifiedExtensions')) {
-                    this.fetchVerifiedStatus(id, client, allVersions).then(verified => {
-                        this.doChange(() => {
-                            this.addExtensions(data, id, allVersions, !!verified);
-                            return Promise.resolve();
+                for (const data of result.extensions) {
+                    const id = data.namespace.toLowerCase() + '.' + data.name.toLowerCase();
+                    const allVersions = filter.getLatestCompatibleVersion(data);
+                    if (!allVersions) {
+                        continue;
+                    }
+                    if (this.preferences.get('extensions.onlyShowVerifiedExtensions')) {
+                        this.fetchVerifiedStatus(id, client, allVersions).then(verified => {
+                            this.doChange(() => {
+                                this.addExtensions(data, id, allVersions, !!verified);
+                                return Promise.resolve();
+                            });
                         });
-                    });
-                } else {
-                    this.addExtensions(data, id, allVersions);
-                    this.fetchVerifiedStatus(id, client, allVersions).then(verified => {
-                        this.doChange(() => {
-                            let extension = this.getExtension(id);
-                            extension = this.setExtension(id);
-                            extension.update(Object.assign({
-                                verified: verified
-                            }));
-                            return Promise.resolve();
+                    } else {
+                        this.addExtensions(data, id, allVersions);
+                        this.fetchVerifiedStatus(id, client, allVersions).then(verified => {
+                            this.doChange(() => {
+                                let extension = this.getExtension(id);
+                                extension = this.setExtension(id);
+                                extension.update(Object.assign({
+                                    verified: verified
+                                }));
+                                return Promise.resolve();
+                            });
                         });
-                    });
+                    }
                 }
+            } catch (error) {
+                this._searchError = error?.message || String(error);
             }
+
         }, token);
     }
 
     protected async fetchVerifiedStatus(id: string, client: OVSXClient, allVersions: VSXAllVersions): Promise<boolean | undefined> {
-        const res = await client.query({ extensionId: id, extensionVersion: allVersions.version, includeAllVersions: true });
-        let verified = res.extensions?.[0].verified;
-        if (!verified && res.extensions?.[0].publishedBy.loginName === 'open-vsx') {
-            verified = true;
+        try {
+            const res = await client.query({ extensionId: id, extensionVersion: allVersions.version, includeAllVersions: true });
+            const extension = res.extensions?.[0];
+            let verified = extension?.verified;
+            if (!verified && extension?.publishedBy.loginName === 'open-vsx') {
+                verified = true;
+            }
+            return verified;
+        } catch (error) {
+            console.error(error);
+            return false;
         }
-        return verified;
     }
 
     protected addExtensions(data: VSXSearchEntry, id: string, allVersions: VSXAllVersions, verified?: boolean): void {
@@ -353,18 +400,22 @@ export class VSXExtensionsModel {
             if (!this.shouldRefresh(extension)) {
                 return extension;
             }
-            const client = await this.clientProvider();
+            const filter = await this.vsxApiFilter();
+            const targetPlatform = await this.applicationServer.getApplicationPlatform() as VSXTargetPlatform;
             let data: VSXExtensionRaw | undefined;
             if (version === undefined) {
-                const { extensions } = await client.query({ extensionId: id, includeAllVersions: true });
-                if (extensions?.length) {
-                    data = this.vsxApiFilter.getLatestCompatibleExtension(extensions);
-                }
+                data = await filter.findLatestCompatibleExtension({
+                    extensionId: id,
+                    includeAllVersions: true,
+                    targetPlatform
+                });
             } else {
-                const { extensions } = await client.query({ extensionId: id, extensionVersion: version, includeAllVersions: true });
-                if (extensions?.length) {
-                    data = extensions?.[0];
-                }
+                data = await filter.findLatestCompatibleExtension({
+                    extensionId: id,
+                    extensionVersion: version,
+                    includeAllVersions: true,
+                    targetPlatform
+                });
             }
             if (!data) {
                 return;

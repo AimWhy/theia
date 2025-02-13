@@ -19,7 +19,7 @@ import '../../src/browser/language-status/editor-language-status.css';
 
 import { ContainerModule } from '@theia/core/shared/inversify';
 import { CommandContribution, MenuContribution } from '@theia/core/lib/common';
-import { OpenHandler, WidgetFactory, FrontendApplicationContribution, KeybindingContribution } from '@theia/core/lib/browser';
+import { OpenHandler, WidgetFactory, FrontendApplicationContribution, KeybindingContribution, WidgetStatusBarContribution } from '@theia/core/lib/browser';
 import { VariableContribution } from '@theia/variable-resolver/lib/browser';
 import { EditorManager, EditorAccess, ActiveEditorAccess, CurrentEditorAccess } from './editor-manager';
 import { EditorContribution } from './editor-contribution';
@@ -38,6 +38,7 @@ import { QuickEditorService } from './quick-editor-service';
 import { EditorLanguageStatusService } from './language-status/editor-language-status-service';
 import { EditorLineNumberContribution } from './editor-linenumber-contribution';
 import { UndoRedoService } from './undo-redo-service';
+import { EditorLanguageQuickPickService } from './editor-language-quick-pick-service';
 
 export default new ContainerModule(bind => {
     bindEditorPreferences(bind);
@@ -58,7 +59,6 @@ export default new ContainerModule(bind => {
     bind(KeybindingContribution).toService(EditorKeybindingContribution);
 
     bind(EditorContribution).toSelf().inSingletonScope();
-    bind(FrontendApplicationContribution).toService(EditorContribution);
     bind(EditorLanguageStatusService).toSelf().inSingletonScope();
 
     bind(EditorLineNumberContribution).toSelf().inSingletonScope();
@@ -72,7 +72,13 @@ export default new ContainerModule(bind => {
 
     bind(VariableContribution).to(EditorVariableContribution).inSingletonScope();
 
-    [CommandContribution, KeybindingContribution, MenuContribution].forEach(serviceIdentifier => {
+    [
+        FrontendApplicationContribution,
+        WidgetStatusBarContribution,
+        CommandContribution,
+        KeybindingContribution,
+        MenuContribution
+    ].forEach(serviceIdentifier => {
         bind(serviceIdentifier).toService(EditorContribution);
     });
     bind(QuickEditorService).toSelf().inSingletonScope();
@@ -84,4 +90,6 @@ export default new ContainerModule(bind => {
     bind(EditorAccess).to(ActiveEditorAccess).inSingletonScope().whenTargetNamed(EditorAccess.ACTIVE);
 
     bind(UndoRedoService).toSelf().inSingletonScope();
+
+    bind(EditorLanguageQuickPickService).toSelf().inSingletonScope();
 });

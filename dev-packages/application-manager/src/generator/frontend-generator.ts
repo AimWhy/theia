@@ -108,7 +108,7 @@ ${Array.from(frontendPreloadModules.values(), jsModulePath => `\
 }
 
 module.exports = (async () => {
-    const { messagingFrontendModule } = require('@theia/core/lib/${this.pck.isBrowser()
+    const { messagingFrontendModule } = require('@theia/core/lib/${this.pck.isBrowser() || this.pck.isBrowserOnly()
                 ? 'browser/messaging/messaging-frontend-module'
                 : 'electron-browser/messaging/electron-messaging-frontend-module'}');
     const container = new Container();
@@ -188,15 +188,6 @@ ${Array.from(frontendModules.values(), jsModulePath => `\
     }
     </style>
     <link rel="stylesheet" href="./secondary-window.css">
-    <script>
-    window.addEventListener('message', e => {
-        // Only process messages from Theia main window
-        if (e.source === window.opener) {
-            // Delegate message to iframe
-            document.getElementsByTagName('iframe').item(0).contentWindow.postMessage({ ...e.data }, '*');
-        }
-    });
-    </script>
 </head>
 
 <body>

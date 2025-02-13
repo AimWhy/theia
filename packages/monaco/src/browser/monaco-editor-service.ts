@@ -67,7 +67,7 @@ export class MonacoEditorService extends StandaloneCodeEditorService {
         let editor = MonacoEditor.getCurrent(this.editors);
         if (!editor && CustomEditorWidget.is(this.shell.activeWidget)) {
             const model = this.shell.activeWidget.modelRef.object;
-            if (model.editorTextModel instanceof MonacoEditorModel) {
+            if (model?.editorTextModel instanceof MonacoEditorModel) {
                 editor = MonacoEditor.findByDocument(this.editors, model.editorTextModel)[0];
             }
         }
@@ -143,6 +143,9 @@ export class MonacoEditorService extends StandaloneCodeEditorService {
         }
         const area = (ref && this.shell.getAreaFor(ref)) || 'main';
         const mode = ref && sideBySide ? 'split-right' : undefined;
+        if (area === 'secondaryWindow') {
+            return { area: 'main', mode };
+        }
         return { area, mode, ref };
     }
 

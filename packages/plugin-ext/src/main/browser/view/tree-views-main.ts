@@ -24,7 +24,6 @@ import {
     CompositeTreeNode,
     WidgetManager
 } from '@theia/core/lib/browser';
-import { ViewContextKeyService } from './view-context-key-service';
 import { Disposable, DisposableCollection } from '@theia/core';
 import { TreeViewWidget, TreeViewNode, PluginTreeModel, TreeViewWidgetOptions } from './tree-view-widget';
 import { PluginViewWidget } from './plugin-view-widget';
@@ -36,7 +35,6 @@ export class TreeViewsMainImpl implements TreeViewsMain, Disposable {
 
     private readonly proxy: TreeViewsExt;
     private readonly viewRegistry: PluginViewRegistry;
-    private readonly contextKeys: ViewContextKeyService;
     private readonly widgetManager: WidgetManager;
     private readonly fileContentStore: DnDFileContentStore;
 
@@ -50,7 +48,6 @@ export class TreeViewsMainImpl implements TreeViewsMain, Disposable {
         this.proxy = rpc.getProxy(MAIN_RPC_CONTEXT.TREE_VIEWS_EXT);
         this.viewRegistry = container.get(PluginViewRegistry);
 
-        this.contextKeys = this.container.get(ViewContextKeyService);
         this.widgetManager = this.container.get(WidgetManager);
         this.fileContentStore = this.container.get(DnDFileContentStore);
     }
@@ -113,11 +110,11 @@ export class TreeViewsMainImpl implements TreeViewsMain, Disposable {
         return BinaryBuffer.wrap(new Uint8Array(buffer));
     }
 
-    async $refresh(treeViewId: string): Promise<void> {
+    async $refresh(treeViewId: string, items?: string[]): Promise<void> {
         const viewPanel = await this.viewRegistry.getView(treeViewId);
         const widget = viewPanel && viewPanel.widgets[0];
         if (widget instanceof TreeViewWidget) {
-            await widget.model.refresh();
+            await widget.refresh(items);
         }
     }
 
@@ -197,7 +194,6 @@ export class TreeViewsMainImpl implements TreeViewsMain, Disposable {
         }));
 
         this.toDispose.push(treeViewWidget.model.onSelectionChanged(event => {
-            this.contextKeys.view.set(treeViewId);
             this.proxy.$setSelection(treeViewId, event.map((node: TreeViewNode) => node.id));
         }));
 

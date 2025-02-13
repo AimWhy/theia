@@ -42,6 +42,7 @@ import { SnippetParser } from '@theia/monaco-editor-core/esm/vs/editor/contrib/s
 import { TextEdit } from '@theia/monaco-editor-core/esm/vs/editor/common/languages';
 import { SnippetController2 } from '@theia/monaco-editor-core/esm/vs/editor/contrib/snippet/browser/snippetController2';
 import { isObject, MaybePromise, nls } from '@theia/core/lib/common';
+import { SaveableService } from '@theia/core/lib/browser';
 
 export namespace WorkspaceFileEdit {
     export function is(arg: Edit): arg is monaco.languages.IWorkspaceFileEdit {
@@ -124,6 +125,9 @@ export class MonacoWorkspace {
     @inject(ProblemManager)
     protected readonly problems: ProblemManager;
 
+    @inject(SaveableService)
+    protected readonly saveService: SaveableService;
+
     @postConstruct()
     protected init(): void {
         this.resolveReady();
@@ -192,7 +196,7 @@ export class MonacoWorkspace {
             // acquired by the editor, thus losing the changes that made it dirty.
             this.textModelService.createModelReference(model.textEditorModel.uri).then(ref => {
                 (
-                    model.autoSave !== 'off' ? new Promise(resolve => model.onDidSaveModel(resolve)) :
+                    this.saveService.autoSave !== 'off' ? new Promise(resolve => model.onDidSaveModel(resolve)) :
                         this.editorManager.open(new URI(model.uri), { mode: 'open' })
                 ).then(
                     () => ref.dispose()
@@ -217,14 +221,16 @@ export class MonacoWorkspace {
      * Applies given edits to the given model.
      * The model is saved if no editors is opened for it.
      */
-    applyBackgroundEdit(model: MonacoEditorModel, editOperations: monaco.editor.IIdentifiedSingleEditOperation[], shouldSave = true): Promise<void> {
+    applyBackgroundEdit(model: MonacoEditorModel, editOperations: monaco.editor.IIdentifiedSingleEditOperation[],
+        shouldSave?: boolean | ((openEditor: MonacoEditor | undefined, wasDirty: boolean) => boolean)): Promise<void> {
         return this.suppressOpenIfDirty(model, async () => {
             const editor = MonacoEditor.findByDocument(this.editorManager, model)[0];
+            const wasDirty = !!editor?.document.dirty;
             const cursorState = editor && editor.getControl().getSelections() || [];
             model.textEditorModel.pushStackElement();
             model.textEditorModel.pushEditOperations(cursorState, editOperations, () => cursorState);
             model.textEditorModel.pushStackElement();
-            if (!editor && shouldSave) {
+            if ((typeof shouldSave === 'function' && shouldSave(editor, wasDirty)) || (!editor && shouldSave)) {
                 await model.save();
             }
         });
